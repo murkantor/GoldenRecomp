@@ -470,6 +470,9 @@ void InitFrameRateControl(void)
 
 #define MAIN_LOOP_TICK_INTERVAL 0x5eb61U
 
+extern s32 g_DebugMode;
+extern s32 g_DebugHighlightedOption;
+
 RECOMP_PATCH void bossMainloop(void) {
     // declarations
 
@@ -655,7 +658,7 @@ RECOMP_PATCH void bossMainloop(void) {
                             //recomp_printf("gunbarrel_mode = %d\n", speedgraphframes);
 
 
-#ifdef DEBUGMENU
+#if 1
                             // ported from pd beta, official way to open debug menu
                             //  If menu is open (?) or player has pressed C down + C up
                             if (g_BossIsDebugMenuOpen ||
