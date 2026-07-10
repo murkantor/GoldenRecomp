@@ -76,6 +76,17 @@ RECOMP_PATCH Gfx* bgScissorCurrentPlayerView(Gfx* gdl, s32 left, s32 top, s32 wi
 }
 #endif
 
+// @recomp NOTE (2026-07-10): a RECOMP_PATCH of viSetupScreensForNumPlayers
+// (paint the letterbox bars sky-coloured instead of black) was attempted here
+// three ways and REVERTED: (1) gEXSetScissor full-frame fill — no effect,
+// extended GBI likely not enabled; (2) plain-scissor full-frame fill — no
+// effect; (3) vanilla-identical strip fills via viSetFillColor + diagnostic
+// print — broke textures and the sky entirely. The bars themselves are NOT
+// painted by this function in the recomp (removing its black fill changed
+// nothing), so the black comes from elsewhere (likely the frame clear /
+// RT64 output path). Do not re-attempt via this function without new
+// evidence.
+
 #if 1
 RECOMP_PATCH void modelSetDistanceDisabled(s32 param_1) {
     // @recomp: ModelDistance always disabled

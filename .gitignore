@@ -76,3 +76,11 @@ gamecontrollerdb.txt
 *.zip
 *.7z
 *.rar
+# Local code-walkthrough notes (kept out of the repo)
+docs/
+
+# Local session artifacts
+out/
+sky*.log
+_img/
+*.lnk
