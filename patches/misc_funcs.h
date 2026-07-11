@@ -25,4 +25,10 @@ DECLARE_FUNC(u32, recomp_get_debug_keys);
 // Sensitivity option; both zero when mouse look is disabled). Clears on
 // read - poll from ONE place per tick.
 DECLARE_FUNC(void, recomp_get_mouse_deltas, f32* x, f32* y);
+// Tells the host what the mouse currently controls: 0 = off, 1 = look
+// (deltas consumed by the mouselook patch), 2 = stick (host converts the
+// deltas into N64 stick input - aim-mode crosshair and menu navigation).
+// Call once per tick; the host decays to stick mode if the game stops
+// reporting (e.g. front menus where the bond pipeline is not ticking).
+DECLARE_FUNC(void, recomp_set_mouse_mode, u32 mode);
 #endif

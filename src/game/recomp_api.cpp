@@ -1,4 +1,6 @@
 #include <cmath>
+#include "SDL.h"
+#include <atomic>
 
 #include "recomp.h"
 #include "librecomp/overlays.hpp"
@@ -129,6 +131,26 @@ extern "C" void __cosf(uint8_t* rdram, recomp_context* ctx) {
 
 extern "C" void __sinf(uint8_t* rdram, recomp_context* ctx) {
     ctx->f0.fl = std::sin(ctx->f12.fl);
+}
+
+// Mouse mode reported by the game each tick: 0 = off, 1 = look (the
+// mouselook patch consumes the deltas), 2 = stick (get_n64_input converts
+// them to stick input for aim-mode crosshair / menu navigation). Decays to
+// stick mode when the game stops reporting (front menus).
+static std::atomic<uint32_t> mouse_mode = 2;
+static std::atomic<uint32_t> mouse_mode_set_ticks = 0;
+
+extern "C" void recomp_set_mouse_mode(uint8_t* rdram, recomp_context* ctx) {
+    mouse_mode.store(_arg<0, u32>(rdram, ctx));
+    mouse_mode_set_ticks.store(SDL_GetTicks());
+}
+
+uint32_t recomp_get_effective_mouse_mode() {
+    // 2 = stick if the game has not reported for a quarter second.
+    if (SDL_GetTicks() - mouse_mode_set_ticks.load() > 250) {
+        return 2;
+    }
+    return mouse_mode.load();
 }
 
 extern "C" void recomp_get_debug_keys(uint8_t* rdram, recomp_context* ctx) {

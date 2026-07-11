@@ -78,4 +78,5 @@ sprintf_recomp = 0x8F000108;
 osPfsInit_recomp = 0x8F00010C;
 osMotorInit_recomp = 0x8F000110;
 recomp_get_debug_keys = 0x8F000114;
+recomp_set_mouse_mode = 0x8F000118;
 

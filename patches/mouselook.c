@@ -48,9 +48,15 @@ RECOMP_PATCH void bondviewApplyVertaTheta(void) {
     // CAMERAMODE_FP is normal first-person play (diagnosed empirically:
     // cam=4 during gameplay, 1/3 during intro cams). FP_NOINPUT stays
     // excluded — the game is explicit about input being off there.
-    if (((g_CameraMode == CAMERAMODE_FP) || (g_CameraMode == CAMERAMODE_MP)) && (get_cur_playernum() == 0)) {
+    // Aim mode (R held, insightaimmode) hands the mouse to the STICK path
+    // instead: the host converts deltas to stick input, which is exactly
+    // what drives the aim crosshair. Everywhere else (menus, cutscenes) the
+    // stick mode default lets the mouse navigate.
+    if (((g_CameraMode == CAMERAMODE_FP) || (g_CameraMode == CAMERAMODE_MP)) && (get_cur_playernum() == 0) &&
+        !g_CurrentPlayer->insightaimmode) {
         f32 mouse_dx;
         f32 mouse_dy;
+        recomp_set_mouse_mode(1); // look
         recomp_get_mouse_deltas(&mouse_dx, &mouse_dy);
         if (mouse_dx != 0.0f || mouse_dy != 0.0f) {
             g_CurrentPlayer->vv_theta += mouse_dx * MOUSELOOK_DEG_PER_COUNT;
@@ -63,6 +69,10 @@ RECOMP_PATCH void bondviewApplyVertaTheta(void) {
             // Mouse forward (negative SDL y) looks up.
             g_CurrentPlayer->vv_verta -= mouse_dy * MOUSELOOK_DEG_PER_COUNT;
         }
+    }
+    else if (get_cur_playernum() == 0) {
+        // Aim mode or non-FP camera: the mouse drives the stick.
+        recomp_set_mouse_mode(2);
     }
 
     while (g_CurrentPlayer->vv_verta < -180.0f) {

@@ -28,6 +28,7 @@
 #include "recompui/recompui.h"
 #include "recompui/config.h"
 #include "recompui/program_config.h"
+#include "recompinput/recompinput.h"
 #include "ovl_patches.hpp"
 #include "librecomp/game.hpp"
 
@@ -609,6 +610,20 @@ int main(int argc, char** argv) {
     recompui::register_extra_font("LatoLatin-Bold.ttf");
     recompui::register_extra_font("LatoLatin-Italic.ttf");
     recompui::register_extra_font("LatoLatin-BoldItalic.ttf");
+
+    // GE keyboard defaults: WASD moves to the D-Pad (movement in the
+    // mouse-friendly control styles); the stick has no keyboard binding —
+    // the mouse drives it (aim crosshair, menus). Must run before the
+    // profiles load. Users with saved profiles need a bindings reset to
+    // pick these up.
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::DPAD_UP, { recompinput::InputField::keyboard(SDL_SCANCODE_W) });
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::DPAD_LEFT, { recompinput::InputField::keyboard(SDL_SCANCODE_A) });
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::DPAD_DOWN, { recompinput::InputField::keyboard(SDL_SCANCODE_S) });
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::DPAD_RIGHT, { recompinput::InputField::keyboard(SDL_SCANCODE_D) });
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::X_AXIS_NEG, {});
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::X_AXIS_POS, {});
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::Y_AXIS_NEG, {});
+    recompinput::set_default_mapping_for_keyboard(recompinput::GameInput::Y_AXIS_POS, {});
 
     recompui::config::create_general_tab(recompui::config::GeneralTabOptions{
         .has_rumble_strength = true,

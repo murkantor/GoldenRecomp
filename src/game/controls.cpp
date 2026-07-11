@@ -4,6 +4,9 @@
 #include "recomp_input.h"
 #include "recompinput/recompinput.h"
 #include "recompinput/profiles.h"
+
+// From recomp_api.cpp: 0 = off, 1 = look, 2 = stick (with decay-to-stick).
+uint32_t recomp_get_effective_mouse_mode();
 #include "ultramodern/ultramodern.hpp"
 
 // Arrays that hold the mappings for every input for keyboard and controller respectively.
@@ -141,6 +144,18 @@ bool recomp::get_n64_input(int controller_num, uint16_t* buttons_out, float* x_o
               - rf_profile_analog(kb_profile, recompinput::GameInput::X_AXIS_NEG) + joystick_x;
         cur_y = rf_profile_analog(kb_profile, recompinput::GameInput::Y_AXIS_POS)
               - rf_profile_analog(kb_profile, recompinput::GameInput::Y_AXIS_NEG) + joystick_y;
+
+        // @recomp Mouse-as-stick: when the game reports stick mode (aim-mode
+        // crosshair, or the front/pause menus via the decay default), mouse
+        // deltas feed the N64 stick. Mouse forward = stick up.
+        if (recomp_get_effective_mouse_mode() == 2) {
+            float mouse_dx = 0.0f;
+            float mouse_dy = 0.0f;
+            recompinput::get_mouse_deltas(&mouse_dx, &mouse_dy);
+            constexpr float mouse_stick_scale = 0.04f;
+            cur_x += mouse_dx * mouse_stick_scale;
+            cur_y -= mouse_dy * mouse_stick_scale;
+        }
     }
 
     *buttons_out = cur_buttons;
