@@ -331,6 +331,9 @@ std::vector<recomp::GameEntry> supported_games = {
     {
         .rom_hash = 0x938df36777b0d0c9, // tblfree
         .internal_name = "GOLDENEYE",
+        // @recomp display_name is required by the new librecomp register_game
+        // (it aborts at startup if empty).
+        .display_name = "GoldenEye 007",
         .game_id = u8"ge007.us",
         .save_type = recomp::SaveType::Eep4k,
         .is_enabled = true,
