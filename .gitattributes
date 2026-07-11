@@ -1,0 +1,2 @@
+# The Linux N64Recomp shim is a sh script - CRLF breaks the shebang.
+/N64Recomp text eol=lf
