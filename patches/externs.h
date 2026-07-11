@@ -449,3 +449,4 @@ extern u32 copy_of_osgetcount_value_1;
 extern u32 g_speedGraphCountAccumulator;
 extern s32 g_speedGraphMaxSeenCount;
 #endif
+void bondviewApplyVertaTheta(void);

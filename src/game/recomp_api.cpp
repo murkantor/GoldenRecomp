@@ -6,6 +6,7 @@
 #include "recomp_input.h"
 #include "recomp_ui.h"
 #include "recompui/renderer.h"
+#include "recompui/config.h"
 #include "zelda_sound.h"
 #include "librecomp/helpers.hpp"
 // #include "../patches/input.h"
@@ -95,7 +96,33 @@ extern "C" void recomp_get_mouse_deltas(uint8_t* rdram, recomp_context* ctx) {
     float* x_out = _arg<0, float*>(rdram, ctx);
     float* y_out = _arg<1, float*>(rdram, ctx);
 
-    recomp::get_mouse_deltas(x_out, y_out);
+    float x = 0.0f;
+    float y = 0.0f;
+    recomp::get_mouse_deltas(&x, &y);
+
+    // Scale by the Mouse Sensitivity option (recompui config store — the
+    // General tab slider). 50 = 1.0x; 0 disables mouse look entirely and
+    // also releases cursor capture (recompinput uses the same option).
+    float sensitivity = 0.0f;
+    if (recompui::config::general::has_mouse_sensitivity_option()) {
+        sensitivity = static_cast<float>(recompui::config::general::get_mouse_sensitivity());
+    }
+    float scale = sensitivity / 50.0f;
+
+    *x_out = x * scale;
+    *y_out = y * scale;
+}
+
+// Native float trig for patch code. The recompiler treats __cosf/__sinf as
+// host-reimplemented (they are in its renamed/reimplemented lists), so the
+// generated calls expect these natives: f12 in, f0 out — libultra's float
+// calling convention for these routines.
+extern "C" void __cosf(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f0.fl = std::cos(ctx->f12.fl);
+}
+
+extern "C" void __sinf(uint8_t* rdram, recomp_context* ctx) {
+    ctx->f0.fl = std::sin(ctx->f12.fl);
 }
 
 extern "C" void recomp_get_debug_keys(uint8_t* rdram, recomp_context* ctx) {

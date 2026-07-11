@@ -21,4 +21,8 @@ DECLARE_FUNC(s32, osMotorInit_recomp, OSMesgQueue*, OSPfs*, int);
 // (F1 = bit 0). F10/F11 never latch (UI reload / fullscreen). Reading
 // clears the latch, so poll from ONE place per frame.
 DECLARE_FUNC(u32, recomp_get_debug_keys);
+// Host mouse deltas since the last read (pixels, pre-scaled by the Mouse
+// Sensitivity option; both zero when mouse look is disabled). Clears on
+// read - poll from ONE place per tick.
+DECLARE_FUNC(void, recomp_get_mouse_deltas, f32* x, f32* y);
 #endif
