@@ -105,18 +105,6 @@ extern "C" void recomp_get_mouse_deltas(uint8_t* rdram, recomp_context* ctx) {
     // passes through unmodified here.
     recomp::get_mouse_deltas(&x, &y);
 
-    // TEMP diagnostic (mouse-look bring-up): once a second, report the
-    // sensitivity and the latest deltas so a dead link in the chain is
-    // visible in the console. Remove when mouse look is confirmed.
-    {
-        static uint32_t diag_count = 0;
-        if ((diag_count++ & 63) == 0) {
-            int sens = recompui::config::general::has_mouse_sensitivity_option()
-                ? recompui::config::general::get_mouse_sensitivity() : -1;
-            printf("MOUSEDIAG host: sens=%d dx=%f dy=%f\n", sens, x, y);
-        }
-    }
-
     *x_out = x;
     *y_out = y;
 }
