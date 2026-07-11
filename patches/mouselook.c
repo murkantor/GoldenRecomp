@@ -37,6 +37,14 @@ f32 __sinf(f32);
 RECOMP_PATCH void bondviewApplyVertaTheta(void) {
     // @recomp: mouse injection (see header comment). Everything below it is
     // the vanilla body (bondview.c:8077).
+    // TEMP diagnostic (mouse-look bring-up): once a second, show that this
+    // patch runs and what the gate/deltas look like. Remove when confirmed.
+    {
+        static u32 diag_ticks = 0;
+        if ((diag_ticks++ & 63) == 0) {
+            recomp_printf("MOUSEDIAG patch: cam=%d player=%d\n", (s32) g_CameraMode, get_cur_playernum());
+        }
+    }
     if ((g_CameraMode == CAMERAMODE_NONE) && (get_cur_playernum() == 0)) {
         f32 mouse_dx;
         f32 mouse_dy;

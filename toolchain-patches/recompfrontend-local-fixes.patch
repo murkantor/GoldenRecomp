@@ -1,0 +1,51 @@
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+index c76a1dc..ba369af 100644
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -70,6 +70,19 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+         }
+     }
+     break;
++    case SDL_EventType::SDL_MOUSEBUTTONDOWN:
++        // @goldenrecomp local fix (upstream gap): allow binding mouse
++        // buttons — they scan under the Keyboard device slot, the usual
++        // PC-port convention. input_id = SDL button index.
++        if (binding::is_binding()) {
++            if (binding::get_scanning_device() == InputDevice::Keyboard) {
++                binding::set_scanned_input({ InputType::Mouse, event->button.button });
++            }
++        }
++        else {
++            queue_if_enabled(event);
++        }
++        break;
+     case SDL_EventType::SDL_CONTROLLERDEVICEADDED:
+     {
+         SDL_ControllerDeviceEvent* controller_event = &event->cdevice;
+diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
+index 03ed871..a593bb3 100644
+--- a/recompinput/src/input_state.cpp
++++ b/recompinput/src/input_state.cpp
+@@ -230,8 +230,9 @@ float recompinput::get_input_analog(int controller_num, const InputField& field)
+     case InputType::ControllerAnalog:
+         return controller_axis_state(controller_num, field.input_id, true);
+     case InputType::Mouse:
+-        // TODO mouse support
+-        return 0.0f;
++        // @goldenrecomp local fix (upstream TODO): mouse buttons as inputs;
++        // input_id is the SDL button index (1 = left, 2 = middle, 3 = right).
++        return (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(field.input_id)) ? 1.0f : 0.0f;
+     case InputType::None:
+         return false;
+     }
+@@ -261,8 +262,8 @@ bool recompinput::get_input_digital(int controller_num, const InputField& field)
+         // TODO adjustable threshold
+         return controller_axis_state(controller_num, field.input_id, true) >= recompinput::axis_digital_threshold;
+     case InputType::Mouse:
+-        // TODO mouse support
+-        return false;
++        // @goldenrecomp local fix (upstream TODO): see get_input_analog.
++        return (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON(field.input_id)) != 0;
+     case InputType::None:
+         return false;
+     }

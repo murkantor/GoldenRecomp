@@ -98,19 +98,25 @@ extern "C" void recomp_get_mouse_deltas(uint8_t* rdram, recomp_context* ctx) {
 
     float x = 0.0f;
     float y = 0.0f;
+    // recompinput scales by the Mouse Sensitivity option internally
+    // (sensitivity/100 — the General tab slider; 0 = off), so the value
+    // passes through unmodified here.
     recomp::get_mouse_deltas(&x, &y);
 
-    // Scale by the Mouse Sensitivity option (recompui config store — the
-    // General tab slider). 50 = 1.0x; 0 disables mouse look entirely and
-    // also releases cursor capture (recompinput uses the same option).
-    float sensitivity = 0.0f;
-    if (recompui::config::general::has_mouse_sensitivity_option()) {
-        sensitivity = static_cast<float>(recompui::config::general::get_mouse_sensitivity());
+    // TEMP diagnostic (mouse-look bring-up): once a second, report the
+    // sensitivity and the latest deltas so a dead link in the chain is
+    // visible in the console. Remove when mouse look is confirmed.
+    {
+        static uint32_t diag_count = 0;
+        if ((diag_count++ & 63) == 0) {
+            int sens = recompui::config::general::has_mouse_sensitivity_option()
+                ? recompui::config::general::get_mouse_sensitivity() : -1;
+            printf("MOUSEDIAG host: sens=%d dx=%f dy=%f\n", sens, x, y);
+        }
     }
-    float scale = sensitivity / 50.0f;
 
-    *x_out = x * scale;
-    *y_out = y * scale;
+    *x_out = x;
+    *y_out = y;
 }
 
 // Native float trig for patch code. The recompiler treats __cosf/__sinf as
