@@ -156,10 +156,11 @@ static u8 g_SkyDbgPrint = 0;
 #if PORTSKY
 /**
  * Draws an "infinite" sky/water plane as a camera-centred ring fan of real
- * RSP geometry (225 verts: centre + four 8-vertex rings to the 70000 rim,
- * a per-quad-rebased textured band out to ~290000 = the original's textured
- * extent at ~97% fog, and a shade-only feather skirt down to the horizon),
- * replacing the original's CPU-rasterised polygons.
+ * RSP geometry (281 verts: centre + three 8-vertex rings to r3, three
+ * per-quad-rebased textured bands out to ~290000 = the original's textured
+ * extent at ~97% fog — for the sky each band steps down a generated mip
+ * level — and a shade-only feather skirt down to the horizon), replacing
+ * the original's CPU-rasterised polygons.
  *
  * Transform, derived from the original's own chain (sub_GAME_7F097388
  * projects sky corners through camGetWorldToScreenMtxf x projF; its
@@ -190,6 +191,17 @@ static u8 g_SkyDbgPrint = 0;
 // "x32 texel" correction attempted earlier was ~15x too dense (radial moire).
 #define SKY_TEXEL_PER_WORLD 0.2f
 
+// Cloud pattern magnification, SKY plane only: sample the 64x64 at
+// 1/SKY_CLOUD_SCALE of true density — visually identical to baking the
+// texture SKY_CLOUD_SCALE x larger per axis, which TMEM could never hold
+// for real (128x128 IA8 = 16KB vs the 4KB TMEM). Clouds render 2x larger
+// and the mirrored-tile repeat covers 4x the area, hiding the tiling that
+// reads so obviously at high output resolution. The scroll offset scales
+// down with the density so the world-space drift speed is unchanged, and
+// the mip bands inherit the scale (their densities derive from this base).
+// Water keeps true density (its own shimmer tiles). 1.0f = source-exact.
+#define SKY_CLOUD_SCALE 2.0f
+
 // Outer edge of the TEXTURED sky: the original's own ray cap is 300000
 // (skyIsScreenCornerInSky), where the fog law reads ~97% — effectively the
 // fog's opacity boundary; beyond its cap the original's UVs freeze (capped
@@ -199,6 +211,20 @@ static u8 g_SkyDbgPrint = 0;
 // span <= (32767 - 4096 rebase remainder) / 0.2 = 143355 world units, and
 // the worst quad (r_mid 180000 -> 290000, 22.5 deg) spans ~141600.
 #define SKY_BAND_OUTER 290000.0f
+
+// The cloud image has NO mip chain (level 0, telemetry-verified on Frigate:
+// 64x64 IA8, single level). On the N64 that means the far sky minifies into
+// aliased noise that the VI filters smear soft and dim; at high output
+// resolution the same texture samples cleanly and stays crisp/white. To get
+// the hardware look back we generate our OWN mip chain (32/16/8, box
+// filter) from the level-0 texels each frame, embed it in the DL beside the
+// vertices, and reload the texture per distance band — the disc keeps the
+// full-res texture, the three outer bands step down through the mips with
+// matching (halved) UV densities so the world-space pattern is continuous
+// across every seam. A flat "fog wash" over the shades was tried first and
+// REVERTED (2026-07-11): compressing the 8-bit vertex-colour amplitude
+// caused visible banding ("creases") and flattened the clouds into the sky.
+#define SKY_MIP_LEVELS 3
 
 // 22.5-degree direction table for the outer band / skirt rings. Even entries
 // are exactly the disc's octagon directions.
@@ -220,23 +246,31 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     // r3 = 10h (0.8, 5.7 deg), rim (1.0, pure fog). Four rings because the
     // curve is concave: linear interpolation between sparse samples
     // systematically under-fogs the mid-sky (measured -0.15 with 3 rings).
-    f32 wx[33], wz[33];
-    f32 tcs[33], tct[33];
-    f32 radius[4];
+    f32 wx[25], wz[25];
+    f32 tcs[25], tct[25];
+    f32 radius[3];
     f32 smin, tmin;
     f32 rsp_y;
     f32 h;
     f32 uoff;
+    f32 texdens;
+    f32 tofft;
     f32 depth_s = 1.0f;
-    // Outer textured band (rim -> fog opacity boundary): ring 0 = attach ring
-    // on the rim octagon, ring 1 = r_mid, ring 2 = r_outer. World coords,
-    // then converted camera-relative in place once the UVs are taken.
-    f32 bx[48], bz[48];
-    f32 bs[48], bt[48];
+    // Outer textured bands (r3 -> fog opacity boundary): ring 0 = attach
+    // ring on the r3 octagon, ring 1 = SKY_PLANE_RADIUS, ring 2 = r_mid,
+    // ring 3 = r_outer. World coords kept (band UVs are computed per quad),
+    // camera-relative copies alongside.
+    f32 bx[64], bz[64];
+    f32 bcx[64], bcz[64];
     f32 r_mid;
     f32 r_outer;
     s32 m;
     s32 j;
+    // Generated cloud mip chain (sky only): 32x32 + 16x16 + 8x8 IA8 texels
+    // embedded in the DL gap; FALSE when the source image isn't the expected
+    // 64x64 IA8 (bands then keep the full-res texture and full UV density).
+    s32 use_mips = FALSE;
+    u8* miptex = NULL;
     coord3d* eye = bondviewGetCurrentPlayersPosition();
     // Embed the vertex and matrix data directly inside the master display
     // list: reserve a gap in the command stream and branch over it. The DL
@@ -249,18 +283,83 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     Mtxf fitmtx;
     SkyRelated18 cols[8];
 
-    // 33 disc + 128 outer-band (32 quads x 4, per-quad UV rebase) + 64 skirt.
-    gdl = (Gfx*) ((u8*) gdl + 225 * sizeof(Vtx));
+    // 25 disc + 192 outer-band (3 sub-bands x 16 quads x 4, per-quad UV
+    // rebase) + 64 skirt.
+    gdl = (Gfx*) ((u8*) gdl + 281 * sizeof(Vtx));
     mtx_render = (Mtx*) gdl;
     gdl = (Gfx*) ((u8*) gdl + sizeof(Mtx));
+    if (!isWater) {
+        // Room for the generated cloud mip chain: 32*32 + 16*16 + 8*8 IA8.
+        miptex = (u8*) gdl;
+        gdl = (Gfx*) ((u8*) gdl + 1344);
+    }
     gSPBranchList(bp, SKY_K0_TO_PHYS(gdl));
 
-    h = plane_y - eye->y;
-    if (h < 0.0f) {
-        h = -h;
+    // Generate the mip chain from the level-0 cloud texture (texSelect has
+    // already texLoad'ed it; the image table index is the physical address
+    // of the linear texel data). IA8: intensity in the high nibble, alpha in
+    // the low. Box filter, each level from the previous.
+    if (!isWater) {
+        sImageTableEntry* simg = &skywaterimages[fogGetCurrentEnvironmentp()->SkyImageId];
+        // Gate on the exact expected shape: 64x64 IA8, no mip chain of its
+        // own, and index already converted by texLoad from a texture number
+        // to the physical address of the decompressed texels (texSelect ran
+        // earlier this frame; a small value means it somehow hasn't).
+        if ((simg->width == 64) && (simg->height == 64) && (simg->depth == G_IM_SIZ_8b) &&
+            (simg->format == G_IM_FMT_IA) && (simg->level == 0) && (simg->index >= 0x1000)) {
+            u8* msrc = (u8*) (simg->index | 0x80000000);
+            u8* mdst = miptex;
+            s32 mw = 64;
+            s32 lvl;
+            for (lvl = 0; lvl < SKY_MIP_LEVELS; lvl++) {
+                s32 hw = mw >> 1;
+                s32 mx, my;
+                for (my = 0; my < hw; my++) {
+                    for (mx = 0; mx < hw; mx++) {
+                        u8 t00 = msrc[(my * 2) * mw + (mx * 2)];
+                        u8 t01 = msrc[(my * 2) * mw + (mx * 2) + 1];
+                        u8 t10 = msrc[(my * 2 + 1) * mw + (mx * 2)];
+                        u8 t11 = msrc[(my * 2 + 1) * mw + (mx * 2) + 1];
+                        s32 mi = ((t00 >> 4) + (t01 >> 4) + (t10 >> 4) + (t11 >> 4) + 2) >> 2;
+                        s32 ma = ((t00 & 0xF) + (t01 & 0xF) + (t10 & 0xF) + (t11 & 0xF) + 2) >> 2;
+                        mdst[my * hw + mx] = (u8) ((mi << 4) | ma);
+                    }
+                }
+                msrc = mdst;
+                mdst += hw * hw;
+                mw = hw;
+            }
+            use_mips = TRUE;
+        }
     }
-    if (h < 50.0f) {
-        h = 50.0f;
+
+    if (isWater) {
+        // Water is a physical surface: true world height every frame.
+        h = plane_y - eye->y;
+        if (h < 0.0f) {
+            h = -h;
+        }
+        if (h < 50.0f) {
+            h = 50.0f;
+        }
+    } else {
+        // Sky: LEVEL-STATIC height — the map's own CloudRepeat measured from
+        // world y = 0, no eye term at all (Murk, 2026-07-11). Live
+        // h = CloudRepeat - eye_y made the band/rim boundaries (fixed WORLD
+        // radii, on-screen elevation atan(h/r)) breathe as the player walked
+        // inclines; a first-frame capture was tried and REVERTED — the
+        // mission's first sky frame is the intro fly-by, whose camera height
+        // near/above the cloud plane collapsed h toward the floor clamp
+        // (disc leaves fading out ~6 deg above the horizon, hyper-elongated
+        // band quads showing radial creases between leaves). The original's
+        // fog law is purely angular (skyIsScreenCornerInSky), so a constant
+        // h is faithful wherever the map's ground sits near y = 0, and it is
+        // deterministic: no capture timing, nothing to reset per mission.
+        // Floor guard covers levels with tiny/absent CloudRepeat.
+        h = plane_y;
+        if (h < 500.0f) {
+            h = 500.0f;
+        }
     }
     // All rings carry real UVs (the s16 budget is enforced by
     // SKY_PLANE_RADIUS itself); inner rings chained below r3 so the ring
@@ -277,14 +376,13 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     if (radius[0] > radius[1] * 0.6f) {
         radius[0] = radius[1] * 0.6f;
     }
-    radius[3] = SKY_PLANE_RADIUS;
-    // Vertex layout: 0 = centre, 1-8 = r1, 9-16 = r2, 17-24 = r3,
-    // 25-32 = rim; 33-160 = outer textured band (32 quads x 4, per-quad UV
-    // rebase); 161-224 = feather skirt (16 quads x 4). Band and skirt are
-    // emitted after the disc loop below.
+    // Vertex layout: 0 = centre, 1-8 = r1, 9-16 = r2, 17-24 = r3;
+    // 25-216 = outer textured bands (3 sub-bands x 16 quads x 4, per-quad UV
+    // rebase, mip level 1/2/3); 217-280 = feather skirt (16 quads x 4). Band
+    // and skirt are emitted after the disc loop below.
     wx[0] = eye->x;
     wz[0] = eye->z;
-    for (k = 0; k < 4; k++) {
+    for (k = 0; k < 3; k++) {
         f32 r = radius[k];
         f32 rd = r * 0.7071f;
         f32* px = &wx[1 + k * 8];
@@ -339,17 +437,19 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     // Every ring including the band's outer edge carries its TRUE law value —
     // the original fades continuously to ~97% at its 300000 ray cap and to
     // frac ~1 exactly at the horizon row (skyIsScreenCornerInSky with y->0).
-    // cols[4] = rim/attach ring (~87% on Dam), cols[5] = r_mid,
-    // cols[6] = r_outer (~97%), cols[7] = pure fog for the skirt's horizon
-    // edge.
+    // cols[3] = r3/attach ring, cols[4] = the 70000 ring (~87% on Dam),
+    // cols[5] = r_mid, cols[6] = r_outer (~97%), cols[7] = pure fog for the
+    // skirt's horizon edge.
     {
         f32 fr[8];
         fr[0] = 0.0f;
-        for (k = 0; k < 4; k++) {
+        for (k = 0; k < 3; k++) {
             f32 f = 1.0f - (2.0f * h) / radius[k];
             if (f < 0.0f) f = 0.0f;
             fr[k + 1] = f;
         }
+        fr[4] = 1.0f - (2.0f * h) / SKY_PLANE_RADIUS;
+        if (fr[4] < 0.0f) fr[4] = 0.0f;
         fr[5] = 1.0f - (2.0f * h) / r_mid;
         if (fr[5] < 0.0f) fr[5] = 0.0f;
         fr[6] = 1.0f - (2.0f * h) / r_outer;
@@ -364,15 +464,19 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         }
     }
 
-    // World-anchored scrolling UVs, true density on EVERY ring including the
-    // rim — the original never freezes or stretches its far texture; the far
-    // clouds are hidden purely by the frac->1 colour convergence.
+    // World-anchored scrolling UVs, uniform density on EVERY ring including
+    // the rim — the original never freezes or stretches its far texture; the
+    // far clouds are hidden purely by the frac->1 colour convergence. The sky
+    // samples at 1/SKY_CLOUD_SCALE of the source density (see the define);
+    // water stays source-exact.
     uoff = isWater ? g_SkyCloudOffset : 0.0f;
+    texdens = isWater ? SKY_TEXEL_PER_WORLD : SKY_TEXEL_PER_WORLD / SKY_CLOUD_SCALE;
+    tofft = isWater ? g_SkyCloudOffset : g_SkyCloudOffset / SKY_CLOUD_SCALE;
     smin = 3.4e38f;
     tmin = 3.4e38f;
-    for (i = 0; i < 33; i++) {
-        tcs[i] = wx[i] * SKY_TEXEL_PER_WORLD + uoff;
-        tct[i] = wz[i] * SKY_TEXEL_PER_WORLD + g_SkyCloudOffset;
+    for (i = 0; i < 25; i++) {
+        tcs[i] = wx[i] * texdens + uoff;
+        tct[i] = wz[i] * texdens + tofft;
         if (tcs[i] < smin) smin = tcs[i];
         if (tct[i] < tmin) tmin = tct[i];
     }
@@ -390,9 +494,12 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     // the very reason the game room-rebases everything RSP-side); with the
     // eye at the origin the view needs no translation at all. Still no
     // current_model_pos / D_800364CC / field_10E0: zero room coupling.
-    rsp_y = (plane_y - eye->y) * depth_s;
+    // Sky rides at the level-static height above the eye (always above —
+    // the game asserts eye_y < skyheight); water tracks the true world
+    // offset every frame.
+    rsp_y = (isWater ? (plane_y - eye->y) : h) * depth_s;
     maxc = rsp_y < 0.0f ? -rsp_y : rsp_y;
-    for (i = 0; i < 33; i++) {
+    for (i = 0; i < 25; i++) {
         f32 cx = (wx[i] - eye->x) * depth_s;
         f32 cz = (wz[i] - eye->z) * depth_s;
         f32 c;
@@ -404,32 +511,32 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         if (c > maxc) maxc = c;
     }
 
-    // Outer band rings, same treatment: world positions -> world-anchored
-    // UVs -> camera-relative in place, folded into the fit bound. The attach
-    // ring (ring 0) lies exactly ON the rim octagon: even entries are the
-    // rim vertices themselves, odd entries the octagon edge midpoints
-    // (radius x cos 22.5), so the band meets batch 4 with no cracks; their
-    // colour is the rim colour (cols[4]) and their UVs are the linear
-    // midpoint of the rim UVs (tc is linear in world position), so shading
-    // and texture are seam-free across the joint too.
+    // Outer band rings: world positions (kept — band UVs are computed per
+    // quad at per-mip density) plus camera-relative copies, folded into the
+    // fit bound. The attach ring (ring 0) lies exactly ON the r3 octagon:
+    // even entries are the r3 vertices themselves, odd entries the octagon
+    // edge midpoints (radius x cos 22.5), so the bands meet batch 3 with no
+    // cracks; their colour is the r3 colour (cols[3]) and their UVs are the
+    // linear midpoint of the r3 UVs (tc is linear in world position), so
+    // shading and texture stay seam-free across the joint.
     for (m = 0; m < 16; m++) {
-        f32 attach_r = (m & 1) ? SKY_PLANE_RADIUS * 0.92388f : SKY_PLANE_RADIUS;
+        f32 attach_r = (m & 1) ? radius[2] * 0.92388f : radius[2];
         bx[m] = eye->x + attach_r * DIR16[m][0];
         bz[m] = eye->z + attach_r * DIR16[m][1];
-        bx[16 + m] = eye->x + r_mid * DIR16[m][0];
-        bz[16 + m] = eye->z + r_mid * DIR16[m][1];
-        bx[32 + m] = eye->x + r_outer * DIR16[m][0];
-        bz[32 + m] = eye->z + r_outer * DIR16[m][1];
+        bx[16 + m] = eye->x + SKY_PLANE_RADIUS * DIR16[m][0];
+        bz[16 + m] = eye->z + SKY_PLANE_RADIUS * DIR16[m][1];
+        bx[32 + m] = eye->x + r_mid * DIR16[m][0];
+        bz[32 + m] = eye->z + r_mid * DIR16[m][1];
+        bx[48 + m] = eye->x + r_outer * DIR16[m][0];
+        bz[48 + m] = eye->z + r_outer * DIR16[m][1];
     }
-    for (m = 0; m < 48; m++) {
+    for (m = 0; m < 64; m++) {
         f32 c;
-        bs[m] = bx[m] * SKY_TEXEL_PER_WORLD + uoff;
-        bt[m] = bz[m] * SKY_TEXEL_PER_WORLD + g_SkyCloudOffset;
-        bx[m] = (bx[m] - eye->x) * depth_s;
-        bz[m] = (bz[m] - eye->z) * depth_s;
-        c = bx[m] < 0.0f ? -bx[m] : bx[m];
+        bcx[m] = (bx[m] - eye->x) * depth_s;
+        bcz[m] = (bz[m] - eye->z) * depth_s;
+        c = bcx[m] < 0.0f ? -bcx[m] : bcx[m];
         if (c > maxc) maxc = c;
-        c = bz[m] < 0.0f ? -bz[m] : bz[m];
+        c = bcz[m] < 0.0f ? -bcz[m] : bcz[m];
         if (c > maxc) maxc = c;
     }
 
@@ -468,19 +575,19 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         // applies B first, then A — so this is "unscale by fit, then rotate".
         matrix_4x4_multiply(&viewrot, &fitmtx, &composed);
 
-        // WaterConcavity: the original biases every sky/water RAY down by
-        // `conc` screen pixels (skyGetWorldPosFromScreenPos adds it to the
-        // screen y) and shifts every DRAWN vertex up by the same amount
-        // (sub_GAME_7F097388: unk2c = y - conc*4) — net, the whole plane
-        // system renders lifted `conc` pixels above the geometric horizon,
-        // which is what widens the fog band at the horizon on levels like
-        // Frigate (Dam has conc = 0, which is why the fan matched there
-        // without this). For real 3D geometry the equivalent is a small
-        // camera pitch: tan(angle) = conc / (P11 * half screen height in
-        // px). Applied in view space AFTER the view rotation; row-vector
-        // rotation (y' = y*c - z*s) lifts content ahead (view z < 0) for
-        // positive sin, matching the original's upward shift.
-        if (conc != 0.0f) {
+        // WaterConcavity — effectively "SkyConcavity" (Murk, 2026-07-11):
+        // the intended look is the SKY lifting `conc` screen pixels off the
+        // horizon, widening the fog band between the cloud fade-out and the
+        // water; the water plane stays at the geometric horizon. (The
+        // original biases the rays down in skyGetWorldPosFromScreenPos and
+        // shifts drawn verts up in sub_GAME_7F097388 to get there.) Dam has
+        // conc = 0, which is why the fan matched there without this. For
+        // real 3D geometry the equivalent is a small camera pitch applied
+        // to the SKY fan only: tan(angle) = conc / (P11 * half screen
+        // height in px). Applied in view space AFTER the view rotation;
+        // row-vector rotation (y' = y*c - z*s) lifts content ahead
+        // (view z < 0) for positive sin.
+        if (conc != 0.0f && !isWater) {
             Mtxf pitch;
             Mtxf lifted;
             f32 t = conc / (currentPlayerGetProjectionMatrixF()->m[1][1] * (getPlayer_c_screenheight() * 0.5f));
@@ -498,13 +605,12 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         matrix_4x4_f32_to_s32(&composed, (Mtxf*) mtx_render);
     }
 
-    for (i = 0; i < 33; i++) {
+    for (i = 0; i < 25; i++) {
         SkyRelated18* col;
         if (i == 0) col = &cols[0];
         else if (i < 9) col = &cols[1];
         else if (i < 17) col = &cols[2];
-        else if (i < 25) col = &cols[3];
-        else col = &cols[4];
+        else col = &cols[3];
         verts[i].v.ob[0] = wx[i] * fit;
         verts[i].v.ob[1] = rsp_y * fit;
         verts[i].v.ob[2] = wz[i] * fit;
@@ -526,37 +632,55 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
 #endif
     }
 
-    // Outer band verts 33-160: 2 radial sub-bands x 16 sectors, one QUAD per
-    // vertex-load (4 verts) so each quad gets its OWN 4096-period UV rebase —
-    // this is what lets true-density texture continue past the disc's shared
+    // Outer band verts 25-216: 3 radial sub-bands x 16 sectors, one QUAD per
+    // vertex-load (4 verts) so each quad gets its OWN whole-period UV
+    // rebase — this is what lets texture continue past the disc's shared
     // rebase budget, out to r_outer (~97% fog, the original's own textured
-    // extent). Adjacent quads differ only by whole visual periods (4096), so
-    // the texture is continuous across every quad boundary.
-    for (j = 0; j < 2; j++) {
+    // extent). With mips, sub-band j samples generated mip level j+1: the
+    // UV density and the rebase period halve per level, so the world-space
+    // pattern stays continuous across every seam (a whole visual period of
+    // any level is the same world distance). Without mips (unexpected image
+    // format) everything stays at full density on the level-0 texture.
+    for (j = 0; j < 3; j++) {
+        f32 uvscale = texdens;
+        f32 period = 4096.0f;
+        f32 su = uoff;
+        f32 sv = tofft;
+        if (use_mips) {
+            uvscale /= (f32) (2 << j);
+            period = (f32) (4096 >> (j + 1));
+            su = uoff / (f32) (2 << j);
+            sv = tofft / (f32) (2 << j);
+        }
         for (m = 0; m < 16; m++) {
             s32 m2 = (m + 1) & 15;
             s32 q[4];
+            f32 qs[4], qt[4];
             f32 qsmin, qtmin;
-            Vtx* v = verts + 33 + (j * 16 + m) * 4;
+            Vtx* v = verts + 25 + (j * 16 + m) * 4;
             q[0] = j * 16 + m;
             q[1] = j * 16 + m2;
             q[2] = (j + 1) * 16 + m;
             q[3] = (j + 1) * 16 + m2;
-            qsmin = bs[q[0]];
-            qtmin = bt[q[0]];
-            for (k = 1; k < 4; k++) {
-                if (bs[q[k]] < qsmin) qsmin = bs[q[k]];
-                if (bt[q[k]] < qtmin) qtmin = bt[q[k]];
-            }
-            qsmin = (f32) (((s32) (qsmin / 4096.0f)) * 4096);
-            qtmin = (f32) (((s32) (qtmin / 4096.0f)) * 4096);
             for (k = 0; k < 4; k++) {
-                SkyRelated18* bcol = (k < 2) ? &cols[4 + j] : &cols[5 + j];
-                v[k].v.ob[0] = bx[q[k]] * fit;
+                qs[k] = bx[q[k]] * uvscale + su;
+                qt[k] = bz[q[k]] * uvscale + sv;
+            }
+            qsmin = qs[0];
+            qtmin = qt[0];
+            for (k = 1; k < 4; k++) {
+                if (qs[k] < qsmin) qsmin = qs[k];
+                if (qt[k] < qtmin) qtmin = qt[k];
+            }
+            qsmin = (f32) (((s32) (qsmin / period)) * period);
+            qtmin = (f32) (((s32) (qtmin / period)) * period);
+            for (k = 0; k < 4; k++) {
+                SkyRelated18* bcol = (k < 2) ? &cols[3 + j] : &cols[4 + j];
+                v[k].v.ob[0] = bcx[q[k]] * fit;
                 v[k].v.ob[1] = rsp_y * fit;
-                v[k].v.ob[2] = bz[q[k]] * fit;
-                v[k].v.tc[0] = skyClamp(bs[q[k]] - qsmin, -32768.f, 32767.f);
-                v[k].v.tc[1] = skyClamp(bt[q[k]] - qtmin, -32768.f, 32767.f);
+                v[k].v.ob[2] = bcz[q[k]] * fit;
+                v[k].v.tc[0] = skyClamp(qs[k] - qsmin, -32768.f, 32767.f);
+                v[k].v.tc[1] = skyClamp(qt[k] - qtmin, -32768.f, 32767.f);
                 v[k].v.cn[0] = bcol->r;
                 v[k].v.cn[1] = bcol->g;
                 v[k].v.cn[2] = bcol->b;
@@ -565,7 +689,7 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         }
     }
 
-    // Feather skirt verts 161-224 (16 sectors x 4): from the band's outer
+    // Feather skirt verts 217-280 (16 sectors x 4): from the band's outer
     // ring down to EYE level (ob y = 0), which on screen is exactly the
     // plane's horizon line — the anchor the original used (its horizon-edge
     // vertices got frac ~1 from skyIsScreenCornerInSky as ray y -> 0). Top
@@ -575,13 +699,13 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     // either — its UVs freeze at the capped positions).
     for (m = 0; m < 16; m++) {
         s32 m2 = (m + 1) & 15;
-        Vtx* v = verts + 161 + m * 4;
+        Vtx* v = verts + 217 + m * 4;
         for (k = 0; k < 4; k++) {
-            s32 src = 32 + ((k & 1) ? m2 : m);
+            s32 src = 48 + ((k & 1) ? m2 : m);
             SkyRelated18* scol = (k < 2) ? &cols[6] : &cols[7];
-            v[k].v.ob[0] = bx[src] * fit;
+            v[k].v.ob[0] = bcx[src] * fit;
             v[k].v.ob[1] = (k < 2) ? (s16) (rsp_y * fit) : 0;
-            v[k].v.ob[2] = bz[src] * fit;
+            v[k].v.ob[2] = bcz[src] * fit;
             v[k].v.tc[0] = 0;
             v[k].v.tc[1] = 0;
             v[k].v.cn[0] = scol->r;
@@ -626,22 +750,28 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         gSP4Triangles(gdl++, a, b, b2, b2, a2, a, c, d, d2, d2, c2, c);
     }
 
-    // Batch 4: ring r3 -> rim (verts 17-32 as slots 0-15).
-    gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 17), 16, 0);
-    for (k = 0; k < 8; k += 2) {
-        s32 a = k, b = (k + 1) & 7, a2 = k + 8, b2 = ((k + 1) & 7) + 8;
-        s32 c = k + 1, d = (k + 2) & 7, c2 = k + 1 + 8, d2 = ((k + 2) & 7) + 8;
-        gSP4Triangles(gdl++, a, b, b2, b2, a2, a, c, d, d2, d2, c2, c);
+    // Batches 4-6: textured outer bands — 16 quads each, one vertex load per
+    // quad (individually rebased UVs; see the vertex build above). With mips
+    // each sub-band first reloads TMEM with its generated mip level, so the
+    // far sky softens exactly like hardware minification+VI mush did — the
+    // whole reason for the mips (the cloud image has no chain of its own).
+    // The combiner is untouched: TEXEL0 just samples the reloaded texture.
+    for (j = 0; j < 3; j++) {
+        if (use_mips) {
+            s32 mw = 32 >> j;
+            u8* mlvl = miptex + ((j == 0) ? 0 : (j == 1) ? 1024 : 1280);
+            sImageTableEntry* simg = &skywaterimages[fogGetCurrentEnvironmentp()->SkyImageId];
+            gDPPipeSync(gdl++);
+            gDPLoadTextureBlock(gdl++, SKY_K0_TO_PHYS(mlvl), G_IM_FMT_IA, G_IM_SIZ_8b, mw, mw, 0,
+                                simg->flagsS, simg->flagsT, 5 - j, 5 - j, G_TX_NOLOD, G_TX_NOLOD);
+        }
+        for (m = 0; m < 16; m++) {
+            gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 25 + (j * 16 + m) * 4), 4, 0);
+            gSP2Triangles(gdl++, 0, 1, 3, 0, 3, 2, 0, 0);
+        }
     }
 
-    // Batch 5: textured outer band — 32 quads, one vertex load each (their
-    // UVs are individually rebased; see the vertex build above).
-    for (k = 0; k < 32; k++) {
-        gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 33 + k * 4), 4, 0);
-        gSP2Triangles(gdl++, 0, 1, 3, 0, 3, 2, 0, 0);
-    }
-
-    // Batch 6: feather skirt, band edge -> horizon, SHADE-ONLY: dropping
+    // Batch 7: feather skirt, band edge -> horizon, SHADE-ONLY: dropping
     // TEXEL0 is what frees it from the UV budget entirely. The combine leak
     // is within the existing contract — each pass re-establishes its own
     // texture/combine before drawing (water sub_GAME_7F09343C, sky
@@ -649,7 +779,7 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     gDPPipeSync(gdl++);
     gDPSetCombineMode(gdl++, G_CC_SHADE, G_CC_SHADE);
     for (k = 0; k < 16; k++) {
-        gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 161 + k * 4), 4, 0);
+        gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 217 + k * 4), 4, 0);
         gSP2Triangles(gdl++, 0, 1, 3, 0, 3, 2, 0, 0);
     }
 
@@ -769,25 +899,6 @@ RECOMP_PATCH Gfx* skyRender(Gfx* gdl) __attribute__((optnone)) {
     scale = get_room_data_float1() / 30.0f;
     sp430 = FALSE;
     env = fogGetCurrentEnvironmentp();
-
-    // @recomp TEMP telemetry (2026-07-11, remove after the Frigate fog
-    // session): one line/sec of the live environment + depth state, to nail
-    // the cloud-whiteness / horizon-fade comparison against gopher64.
-    {
-        static u32 envdbg_frame = 0;
-        if ((envdbg_frame++ & 63) == 0) {
-            f32 zr[2];
-            viGetZRange(zr);
-            recomp_printf("SKYENV rgb=(%d,%d,%d) clouds=%d cloudRGB=(%d,%d,%d) crept=%d water=%d waterRGB=(%d,%d,%d) wrept=%d conc=%d farI=%d difI=%d znear=%d zfar=%d\n",
-                          env->Red, env->Green, env->Blue, env->Clouds,
-                          (s32) env->CloudRed, (s32) env->CloudGreen, (s32) env->CloudBlue,
-                          (s32) env->CloudRepeat, env->IsWater,
-                          (s32) env->WaterRed, (s32) env->WaterGreen, (s32) env->WaterBlue,
-                          (s32) env->WaterRepeat, (s32) env->WaterConcavity,
-                          env->FarIntensity, env->DifferenceFromFarIntensity,
-                          (s32) zr[0], (s32) zr[1]);
-        }
-    }
 
 #if SKYDBG
     g_SkyDbgPrint = (g_SkyDbgFrame++ & 63) == 0;
