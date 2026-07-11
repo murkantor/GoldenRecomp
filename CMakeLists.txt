@@ -91,6 +91,13 @@ set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${CMAKE_SOURCE_DIR}/lib/N64ModernRunti
 set(RECOMP_FRONTEND_RT64_PATH ${CMAKE_SOURCE_DIR}/lib/rt64)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RecompFrontend)
 
+# librecomp bundles nlohmann json 3.9 while RT64 (and therefore recompui)
+# bundles 3.12 - the ABI version is part of the mangled names, so recompui's
+# references to recomp::config::Config methods would not link. Force the
+# runtime targets onto RT64's copy.
+target_include_directories(librecomp BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib)
+target_include_directories(ultramodern BEFORE PRIVATE ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib)
+
 # The bundled fmt 10.x fails its FMT_STRING consteval parse under clang >= 21
 # (string-literal pointer arithmetic no longer constant-foldable); building it
 # as C++17 disables fmt's consteval path without touching the submodule.
@@ -244,10 +251,11 @@ set (SOURCES
     ${CMAKE_SOURCE_DIR}/src/main/main.cpp
     ${CMAKE_SOURCE_DIR}/src/main/register_overlays.cpp
     ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp
-    ${CMAKE_SOURCE_DIR}/src/main/rt64_render_context.cpp
+    # src/main/rt64_render_context.cpp superseded by recompui's renderer
 
     # src/game/input.cpp and src/ui/* are replaced by RecompFrontend
     # (recompinput + recompui); game-side glue below is ported to its APIs.
+    ${CMAKE_SOURCE_DIR}/src/game/input_compat.cpp
     ${CMAKE_SOURCE_DIR}/src/game/controls.cpp
     ${CMAKE_SOURCE_DIR}/src/game/config.cpp
     ${CMAKE_SOURCE_DIR}/src/game/scene_table.cpp

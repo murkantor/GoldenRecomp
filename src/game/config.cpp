@@ -1,7 +1,8 @@
 #include "zelda_config.h"
+#include "json/json.hpp"
+using json = nlohmann::json;
 #include "recomp_input.h"
 #include "zelda_sound.h"
-#include "zelda_render.h"
 #include "ultramodern/config.hpp"
 #include "librecomp/files.hpp"
 #include <filesystem>

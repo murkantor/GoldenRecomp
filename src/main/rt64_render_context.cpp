@@ -59,9 +59,9 @@ unsigned int VI_V_BURST_REG = 0;
 unsigned int VI_X_SCALE_REG = 0;
 unsigned int VI_Y_SCALE_REG = 0;
 
-void dummy_check_interrupts() {}
+static void dummy_check_interrupts() {}
 
-RT64::UserConfiguration::Antialiasing compute_max_supported_aa(plume::RenderSampleCounts bits) {
+static RT64::UserConfiguration::Antialiasing compute_max_supported_aa(plume::RenderSampleCounts bits) {
     if (bits & plume::RenderSampleCount::COUNT_2) {
         if (bits & plume::RenderSampleCount::COUNT_4) {
             if (bits & plume::RenderSampleCount::COUNT_8) {

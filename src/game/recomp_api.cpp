@@ -5,7 +5,7 @@
 #include "zelda_config.h"
 #include "recomp_input.h"
 #include "recomp_ui.h"
-#include "zelda_render.h"
+#include "recompui/renderer.h"
 #include "zelda_sound.h"
 #include "librecomp/helpers.hpp"
 // #include "../patches/input.h"
@@ -41,14 +41,7 @@ extern "C" void osPfsInit_recomp(uint8_t* rdram, recomp_context* ctx) {
 }
 
 // TODO: Validate this
-extern "C" void __f_to_ll_recomp(uint8_t* rdram, recomp_context* ctx) {
-    float input = ctx->f12.fl;
-
-    int64_t result = (int64_t) input;
-
-    ctx->r2 = (int32_t) (result >> 32); // Signed high part
-    ctx->r3 = (int32_t) (result >> 0);  // Low part as unsigned
-}
+// __f_to_ll_recomp is provided by the new librecomp (math_routines.cpp).
 
 // TODO: Validate this
 extern "C" void __ll_to_d_recomp(uint8_t* rdram, recomp_context* ctx) {
@@ -67,14 +60,7 @@ extern "C" void rmonPrintf_recomp(uint8_t* rdram, recomp_context* ctx) {
     // Empty
 }
 
-extern "C" void __ll_lshift_recomp(uint8_t* rdram, recomp_context* ctx) {
-    int64_t a = (ctx->r4 << 32) | ((ctx->r5 << 0) & 0xFFFFFFFFu);
-    int64_t b = (ctx->r6 << 32) | ((ctx->r7 << 0) & 0xFFFFFFFFu);
-    int64_t ret = a << b;
-
-    ctx->r2 = (int32_t) (ret >> 32);
-    ctx->r3 = (int32_t) (ret >> 0);
-}
+// __ll_lshift_recomp is provided by the new librecomp (math_routines.cpp).
 
 extern "C" void __ll_rshift_recomp(uint8_t* rdram, recomp_context* ctx) {
     int64_t a = (ctx->r4 << 32) | ((ctx->r5 << 0) & 0xFFFFFFFFu);
@@ -184,7 +170,7 @@ extern "C" void recomp_load_overlays(uint8_t* rdram, recomp_context* ctx) {
 }
 
 extern "C" void recomp_high_precision_fb_enabled(uint8_t* rdram, recomp_context* ctx) {
-    _return(ctx, static_cast<s32>(zelda64::renderer::RT64HighPrecisionFBEnabled()));
+    _return(ctx, static_cast<s32>(recompui::renderer::RT64HighPrecisionFBEnabled()));
 }
 
 extern "C" void recomp_get_resolution_scale(uint8_t* rdram, recomp_context* ctx) {

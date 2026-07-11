@@ -24,7 +24,7 @@
 #include "recomp_input.h"
 #include "zelda_config.h"
 #include "zelda_sound.h"
-#include "zelda_render.h"
+#include "recompui/renderer.h"
 #include "ovl_patches.hpp"
 #include "librecomp/game.hpp"
 
@@ -596,7 +596,12 @@ int main(int argc, char** argv) {
     };
 
     ultramodern::renderer::callbacks_t renderer_callbacks{
-        .create_render_context = zelda64::renderer::create_render_context,
+        // recompui's factory takes an extra PresentationMode; the ultramodern
+        // callback signature does not, so wrap it. Console = the standard
+        // buffered presentation (matches the old behaviour).
+        .create_render_context = [](uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode) {
+            return recompui::renderer::create_render_context(rdram, window_handle, ultramodern::renderer::PresentationMode::Console, developer_mode);
+        },
     };
 
     ultramodern::gfx_callbacks_t gfx_callbacks{
