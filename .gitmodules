@@ -19,3 +19,6 @@
 [submodule "lib/ge"]
 	path = lib/ge
 	url = https://github.com/kholdfuzion/goldeneye_src.git
+[submodule "lib/RecompFrontend"]
+	path = lib/RecompFrontend
+	url = https://github.com/N64Recomp/RecompFrontend.git

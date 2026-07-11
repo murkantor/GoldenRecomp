@@ -388,6 +388,10 @@ RECOMP_PATCH void bondviewMovePlayerUpdateViewport(s8 stick_x, s8 stick_y, u16 b
 
 #if 1
 
+// @recomp: local libc helper. The new N64Recomp renames functions with
+// libc-colliding names (strtol -> strtol_recomp) on BOTH the game and patch
+// sides, so this stays a plain local function — patch callers bind to it,
+// and the game keeps its own (renamed) implementation.
 long strtol(const char* nptr, char** endptr, int base) {
     const char* s = nptr;
     long result = 0;

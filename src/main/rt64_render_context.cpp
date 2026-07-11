@@ -61,10 +61,10 @@ unsigned int VI_Y_SCALE_REG = 0;
 
 void dummy_check_interrupts() {}
 
-RT64::UserConfiguration::Antialiasing compute_max_supported_aa(RT64::RenderSampleCounts bits) {
-    if (bits & RT64::RenderSampleCount::Bits::COUNT_2) {
-        if (bits & RT64::RenderSampleCount::Bits::COUNT_4) {
-            if (bits & RT64::RenderSampleCount::Bits::COUNT_8) {
+RT64::UserConfiguration::Antialiasing compute_max_supported_aa(plume::RenderSampleCounts bits) {
+    if (bits & plume::RenderSampleCount::COUNT_2) {
+        if (bits & plume::RenderSampleCount::COUNT_4) {
+            if (bits & plume::RenderSampleCount::COUNT_8) {
                 return RT64::UserConfiguration::Antialiasing::MSAA8X;
             }
             return RT64::UserConfiguration::Antialiasing::MSAA4X;
@@ -294,9 +294,9 @@ zelda64::renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::rendere
     // Check if the selected device actually supports MSAA sample positions and MSAA for for the formats that will be used
     // and downgrade the configuration accordingly.
     if (app->device->getCapabilities().sampleLocations) {
-        RT64::RenderSampleCounts color_sample_counts = app->device->getSampleCountsSupported(RT64::RenderFormat::R8G8B8A8_UNORM);
-        RT64::RenderSampleCounts depth_sample_counts = app->device->getSampleCountsSupported(RT64::RenderFormat::D32_FLOAT);
-        RT64::RenderSampleCounts common_sample_counts = color_sample_counts & depth_sample_counts;
+        plume::RenderSampleCounts color_sample_counts = app->device->getSampleCountsSupported(plume::RenderFormat::R8G8B8A8_UNORM);
+        plume::RenderSampleCounts depth_sample_counts = app->device->getSampleCountsSupported(plume::RenderFormat::D32_FLOAT);
+        plume::RenderSampleCounts common_sample_counts = color_sample_counts & depth_sample_counts;
         device_max_msaa = compute_max_supported_aa(common_sample_counts);
         sample_positions_supported = true;
     }
@@ -316,9 +316,19 @@ void zelda64::renderer::RT64Context::send_dl(const OSTask* task) {
     app->processDisplayLists(app->core.RDRAM, task->t.data_ptr & 0x3FFFFFF, 0, true);
 }
 
-void zelda64::renderer::RT64Context::update_screen(uint32_t vi_origin) {
-    VI_ORIGIN_REG = vi_origin;
+void zelda64::renderer::RT64Context::update_screen() {
+    // New runtime interface: the VI registers arrive via ultramodern's
+    // shared ViRegs snapshot instead of an argument.
+    VI_ORIGIN_REG = ultramodern::renderer::get_vi_regs()->VI_ORIGIN_REG;
 
+    app->updateScreen();
+}
+
+void zelda64::renderer::RT64Context::send_dummy_workload(uint32_t fb_address) {
+    // Present the framebuffer at fb_address without a display list (the
+    // runtime sends this when a frame was written CPU-side with no RSP
+    // task). Minimal implementation: point the VI origin at it and present.
+    VI_ORIGIN_REG = fb_address;
     app->updateScreen();
 }
 
