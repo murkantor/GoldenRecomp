@@ -2,6 +2,8 @@
 
 #include "librecomp/helpers.hpp"
 #include "recomp_input.h"
+#include "recompinput/recompinput.h"
+#include "recompinput/profiles.h"
 #include "ultramodern/ultramodern.hpp"
 
 // Arrays that hold the mappings for every input for keyboard and controller respectively.
@@ -75,37 +77,70 @@ void recomp::set_input_binding(recomp::GameInput input, size_t binding_index, re
     }
 }
 
+// @recomp The Controls tab edits recompinput's profile store (that's what
+// saves to controls.json), so gameplay must read the SAME store — the old
+// keyboard/controller mapping arrays above only back the legacy config
+// paths now. These helpers evaluate a profile binding live.
+static const uint16_t rf_n64_button_values[] = {
+#define DEFINE_INPUT(name, value, readable) value,
+    DEFINE_N64_BUTTON_INPUTS()
+#undef DEFINE_INPUT
+};
+
+static float rf_profile_analog(int profile_index, recompinput::GameInput input) {
+    if (profile_index < 0) {
+        return 0.0f;
+    }
+    float total = 0.0f;
+    for (size_t b = 0; b < recompinput::num_bindings_per_input; b++) {
+        total += recompinput::get_input_analog(0, recompinput::profiles::get_input_binding(profile_index, input, b));
+    }
+    return std::clamp(total, 0.0f, 1.0f);
+}
+
+static bool rf_profile_digital(int profile_index, recompinput::GameInput input) {
+    if (profile_index < 0) {
+        return false;
+    }
+    for (size_t b = 0; b < recompinput::num_bindings_per_input; b++) {
+        if (recompinput::get_input_digital(0, recompinput::profiles::get_input_binding(profile_index, input, b))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool recomp::get_n64_input(int controller_num, uint16_t* buttons_out, float* x_out, float* y_out) {
     uint16_t cur_buttons = 0;
     float cur_x = 0.0f;
     float cur_y = 0.0f;
-    
+
     if (controller_num != 0) {
         return false;
     }
 
     if (!recomp::game_input_disabled()) {
-        for (size_t i = 0; i < n64_button_values.size(); i++) {
-            size_t input_index = (size_t)GameInput::N64_BUTTON_START + i;
-            cur_buttons |= recomp::get_input_digital(keyboard_input_mappings[input_index]) ? n64_button_values[i] : 0;
-            cur_buttons |= recomp::get_input_digital(controller_input_mappings[input_index]) ? n64_button_values[i] : 0;
+        int kb_profile = recompinput::profiles::get_sp_keyboard_profile_index();
+        int ctrl_profile = recompinput::profiles::get_sp_controller_profile_index();
+
+        for (size_t i = 0; i < std::size(rf_n64_button_values); i++) {
+            recompinput::GameInput input = static_cast<recompinput::GameInput>(static_cast<size_t>(recompinput::GameInput::N64_BUTTON_START) + i);
+            if (rf_profile_digital(kb_profile, input) || rf_profile_digital(ctrl_profile, input)) {
+                cur_buttons |= rf_n64_button_values[i];
+            }
         }
 
-        float joystick_deadzone = recomp::get_joystick_deadzone() / 100.0f;
+        float joystick_x = rf_profile_analog(ctrl_profile, recompinput::GameInput::X_AXIS_POS)
+                         - rf_profile_analog(ctrl_profile, recompinput::GameInput::X_AXIS_NEG);
+        float joystick_y = rf_profile_analog(ctrl_profile, recompinput::GameInput::Y_AXIS_POS)
+                         - rf_profile_analog(ctrl_profile, recompinput::GameInput::Y_AXIS_NEG);
 
-        float joystick_x = recomp::get_input_analog(controller_input_mappings[(size_t)GameInput::X_AXIS_POS])
-                        - recomp::get_input_analog(controller_input_mappings[(size_t)GameInput::X_AXIS_NEG]);
+        recompinput::apply_joystick_deadzone(joystick_x, joystick_y, &joystick_x, &joystick_y);
 
-        float joystick_y = recomp::get_input_analog(controller_input_mappings[(size_t)GameInput::Y_AXIS_POS])
-                        - recomp::get_input_analog(controller_input_mappings[(size_t)GameInput::Y_AXIS_NEG]);
-
-        recomp::apply_joystick_deadzone(joystick_x, joystick_y, &joystick_x, &joystick_y);
-
-        cur_x = recomp::get_input_analog(keyboard_input_mappings[(size_t)GameInput::X_AXIS_POS])
-                - recomp::get_input_analog(keyboard_input_mappings[(size_t)GameInput::X_AXIS_NEG]) + joystick_x;
-
-        cur_y = recomp::get_input_analog(keyboard_input_mappings[(size_t)GameInput::Y_AXIS_POS])
-                - recomp::get_input_analog(keyboard_input_mappings[(size_t)GameInput::Y_AXIS_NEG]) + joystick_y;
+        cur_x = rf_profile_analog(kb_profile, recompinput::GameInput::X_AXIS_POS)
+              - rf_profile_analog(kb_profile, recompinput::GameInput::X_AXIS_NEG) + joystick_x;
+        cur_y = rf_profile_analog(kb_profile, recompinput::GameInput::Y_AXIS_POS)
+              - rf_profile_analog(kb_profile, recompinput::GameInput::Y_AXIS_NEG) + joystick_y;
     }
 
     *buttons_out = cur_buttons;
