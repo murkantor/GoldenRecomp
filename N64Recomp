@@ -1,0 +1,17 @@
+#!/bin/sh
+# Linux shim for the patch recompiler step (see docs/memory: the N64Recomp
+# CLI built from the N64ModernRuntime submodule pin is NOT the same vintage
+# as the committed N64Recomp.exe — it finds 0 of the 402 patch functions and
+# silently writes EMPTY RecompiledPatches. Until the tool versions are
+# aligned, RecompiledPatches must be generated on Windows with N64Recomp.exe,
+# and this shim just validates that those outputs are current.)
+#
+# Windows builds are unaffected: cmd resolves ./N64Recomp to N64Recomp.exe.
+if [ patches/patches.elf -nt RecompiledPatches/patches.c ]; then
+    echo "N64Recomp shim: patches/patches.elf is NEWER than RecompiledPatches/patches.c." >&2
+    echo "Regenerate on Windows first:  .\\N64Recomp.exe patches.toml  (repo root)," >&2
+    echo "then re-run this build. Refusing to continue with stale patches." >&2
+    exit 1
+fi
+echo "N64Recomp shim: RecompiledPatches outputs are current (Windows-generated); skipping regeneration."
+exit 0

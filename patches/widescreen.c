@@ -1,5 +1,18 @@
 #include "patches.h"
 
+// @recomp Flicker-hunt toggles (2026-07-11). Tested at all-0 (vanilla) with
+// extended aspect + fast framerate: the Depot/Frigate flicker PERSISTED —
+// these game-side hacks are exonerated; the cause is host-side (RT64
+// extended-aspect / frame-pacing processing). The all-0 build also proved
+// these hacks are load-bearing for presentation: vanilla-true per-room
+// scissors made RT64 misframe the output (16:9 stretched to 4:3, black
+// bounds, see-through letterbox rows) — RT64 evidently derives its extended
+// framing from the full-frame EX scissors. Keep all four at 1.
+#define WS_FULLFRAME_ROOM_SCISSOR 1
+#define WS_INSTSIZE_X4 1
+#define WS_LODSCALE_DIV8 1
+#define WS_DISTANCE_ALWAYS_DISABLED 1
+
 #if 0
 RECOMP_PATCH Gfx* dynGetMasterDisplayList(void) {
     g_GfxRequestedDisplayList = TRUE;
@@ -68,9 +81,16 @@ RECOMP_PATCH Gfx* bgScissorCurrentPlayerView(Gfx* gdl, s32 left, s32 top, s32 wi
         height = player->viewtop + player->viewy;
     }
 
+#if WS_FULLFRAME_ROOM_SCISSOR
     // @recomp: use gEXSetScissor instead
     // gDPSetScissor(gdl++, G_SC_NON_INTERLACE, left, top, width, height);
     gEXSetScissor(gdl++, G_SC_NON_INTERLACE, G_EX_ORIGIN_LEFT, G_EX_ORIGIN_RIGHT, 0, 0, 0, 240);
+#else
+    // Vanilla-true per-room scissor rect (EX call, NONE origins = plain
+    // framebuffer coords). In extended aspect this clips room draws at the
+    // 4:3 edges — acceptable for the diagnostic.
+    gEXSetScissor(gdl++, G_SC_NON_INTERLACE, G_EX_ORIGIN_NONE, G_EX_ORIGIN_NONE, left, top, width, height);
+#endif
 
     return gdl;
 }
@@ -89,12 +109,17 @@ RECOMP_PATCH Gfx* bgScissorCurrentPlayerView(Gfx* gdl, s32 left, s32 top, s32 wi
 
 #if 1
 RECOMP_PATCH void modelSetDistanceDisabled(s32 param_1) {
+#if WS_DISTANCE_ALWAYS_DISABLED
     // @recomp: ModelDistance always disabled
     if ((g_StageNum == LEVELID_JUNGLE)) {
         g_ModelDistanceDisabled = 0;
     } else {
         g_ModelDistanceDisabled = 1;
     }
+#else
+    // Vanilla: honour the level's own setting.
+    g_ModelDistanceDisabled = param_1;
+#endif
 }
 #endif
 
@@ -240,11 +265,18 @@ RECOMP_PATCH f32 getinstsize(Model* arg0) // @theboy181
     }
 #endif
 
+#if WS_INSTSIZE_X4
     if (demoMode == 0) { // @theboy181 - fps fix - Demo timing fix
         ret = arg0->obj->BoundingVolumeRadius * arg0->scale * 4;
     } else {
         ret = arg0->obj->BoundingVolumeRadius * arg0->scale;
     } // @recomp:
+#else
+    // Vanilla: true bounding size. This value feeds the fog visibility
+    // range and distance-fade (chrobjRenderProp below) — the x4 makes props
+    // render far beyond the fog wall at a fraction of the proper fog blend.
+    ret = arg0->obj->BoundingVolumeRadius * arg0->scale;
+#endif
 
     return ret;
 }
@@ -252,7 +284,12 @@ RECOMP_PATCH f32 getinstsize(Model* arg0) // @theboy181
 
 #if 1
 RECOMP_PATCH f32 getPlayer_c_lodscalez(void) {
+#if WS_LODSCALE_DIV8
     return g_CurrentPlayer->c_lodscalez / 8; // @theboy181 - Proper LOD fix?
+#else
+    // Vanilla LOD scale.
+    return g_CurrentPlayer->c_lodscalez;
+#endif
 }
 #endif
 
