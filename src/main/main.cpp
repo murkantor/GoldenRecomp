@@ -25,6 +25,9 @@
 #include "zelda_config.h"
 #include "zelda_sound.h"
 #include "recompui/renderer.h"
+#include "recompui/recompui.h"
+#include "recompui/config.h"
+#include "recompui/program_config.h"
 #include "ovl_patches.hpp"
 #include "librecomp/game.hpp"
 
@@ -593,6 +596,30 @@ int main(int argc, char** argv) {
 
     recomp::register_config_path(zelda64::get_app_folder_path());
     zelda64::load_config();
+
+    // recompui bring-up: fonts, config tabs, and finalize must all happen
+    // before recomp::start — recompinput's event loop queries the general
+    // config every tick. The styling/context/menu init itself runs inside
+    // recompui's own render hook; these calls just register what it needs.
+    recompui::programconfig::set_program_name("GoldenRecomp");
+    recompui::programconfig::set_program_id(u8"goldenrecomp");
+    recompui::register_primary_font("ChiaroNormal.otf", "chiaro");
+    recompui::register_extra_font("ChiaroBold.otf");
+    recompui::register_extra_font("LatoLatin-Regular.ttf");
+    recompui::register_extra_font("LatoLatin-Bold.ttf");
+    recompui::register_extra_font("LatoLatin-Italic.ttf");
+    recompui::register_extra_font("LatoLatin-BoldItalic.ttf");
+
+    recompui::config::create_general_tab(recompui::config::GeneralTabOptions{
+        .has_rumble_strength = true,
+        .has_gyro_sensitivity = true,
+        .has_mouse_sensitivity = true,
+    });
+    recompui::config::create_controls_tab();
+    recompui::config::create_graphics_tab();
+    recompui::config::create_sound_tab();
+    recompui::config::create_mods_tab();
+    recompui::config::finalize();
 
     recomp::rsp::callbacks_t rsp_callbacks{
         .get_rsp_microcode = get_rsp_microcode,
