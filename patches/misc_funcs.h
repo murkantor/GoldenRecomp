@@ -17,4 +17,8 @@ DECLARE_FUNC(s32, osPiStartDma_recomp, OSIoMesg* mb, s32 priority, s32 direction
              size_t nbytes, OSMesgQueue* mq);
 DECLARE_FUNC(s32, osPfsInit_recomp, OSMesgQueue*, OSPfs*, int);
 DECLARE_FUNC(s32, osMotorInit_recomp, OSMesgQueue*, OSPfs*, int);
+// Latched debug F-key presses from the host keyboard: bit n = F(n+1)
+// (F1 = bit 0). F10/F11 never latch (UI reload / fullscreen). Reading
+// clears the latch, so poll from ONE place per frame.
+DECLARE_FUNC(u32, recomp_get_debug_keys);
 #endif

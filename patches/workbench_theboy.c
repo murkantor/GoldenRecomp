@@ -658,6 +658,19 @@ RECOMP_PATCH void bossMainloop(void) {
                             //recomp_printf("gunbarrel_mode = %d\n", speedgraphframes);
 
 
+                            // @recomp F1 toggles the debug editor from the
+                            // host keyboard (works on every platform the
+                            // recomp runs on — the old C-down+C-up combo
+                            // still works too). Other F-keys arrive in the
+                            // same bitmask (bit n = F(n+1)); bind them here
+                            // as needs arise. recomp_get_debug_keys clears
+                            // on read — poll exactly once per frame.
+                            {
+                                u32 debugFKeys = recomp_get_debug_keys();
+                                if (debugFKeys & 0x001) { // F1
+                                    g_BossIsDebugMenuOpen = !g_BossIsDebugMenuOpen;
+                                }
+                            }
 #if 1
                             // ported from pd beta, official way to open debug menu
                             //  If menu is open (?) or player has pressed C down + C up

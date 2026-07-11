@@ -43,6 +43,14 @@ static struct {
 } InputState;
 
 std::atomic<recomp::InputDevice> scanning_device = recomp::InputDevice::COUNT;
+
+// Latched debug F-key presses for the game side (recomp_get_debug_keys):
+// bit n = F(n+1). F10/F11 never latch — they are UI reload / fullscreen.
+static std::atomic<uint32_t> pending_debug_keys = 0;
+
+uint32_t recomp::get_and_clear_debug_keys() {
+    return pending_debug_keys.exchange(0);
+}
 std::atomic<recomp::InputField> scanned_input;
 
 enum class InputType {
@@ -112,6 +120,13 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
                 keyevent->keysym.scancode == SDL_Scancode::SDL_SCANCODE_F11
             ) {
                 recompui::toggle_fullscreen();
+            }
+            if (!event->key.repeat &&
+                keyevent->keysym.scancode >= SDL_Scancode::SDL_SCANCODE_F1 &&
+                keyevent->keysym.scancode <= SDL_Scancode::SDL_SCANCODE_F12 &&
+                keyevent->keysym.scancode != SDL_Scancode::SDL_SCANCODE_F10 &&
+                keyevent->keysym.scancode != SDL_Scancode::SDL_SCANCODE_F11) {
+                pending_debug_keys.fetch_or(1u << (keyevent->keysym.scancode - SDL_Scancode::SDL_SCANCODE_F1));
             }
             if (scanning_device != recomp::InputDevice::COUNT) {
                 if (keyevent->keysym.scancode == SDL_Scancode::SDL_SCANCODE_ESCAPE) {

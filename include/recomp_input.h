@@ -77,6 +77,9 @@ namespace recomp {
     void get_gyro_deltas(float* x, float* y);
     void get_mouse_deltas(float* x, float* y);
     void get_right_analog(float* x, float* y);
+    // Latched debug F-key presses: bit n = F(n+1). F10/F11 excluded (UI
+    // reload / fullscreen). Cleared by the read.
+    uint32_t get_and_clear_debug_keys();
 
     enum class InputDevice {
         Controller,

@@ -112,6 +112,10 @@ extern "C" void recomp_get_mouse_deltas(uint8_t* rdram, recomp_context* ctx) {
     recomp::get_mouse_deltas(x_out, y_out);
 }
 
+extern "C" void recomp_get_debug_keys(uint8_t* rdram, recomp_context* ctx) {
+    _return(ctx, recomp::get_and_clear_debug_keys());
+}
+
 extern "C" void recomp_powf(uint8_t* rdram, recomp_context* ctx) {
     float a = _arg<0, float>(rdram, ctx);
     float b = ctx->f14.fl; //_arg<1, float>(rdram, ctx);
