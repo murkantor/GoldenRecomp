@@ -156,8 +156,10 @@ static u8 g_SkyDbgPrint = 0;
 #if PORTSKY
 /**
  * Draws an "infinite" sky/water plane as a camera-centred ring fan of real
- * RSP geometry (33 verts: centre + four 8-vertex rings), replacing the
- * original's CPU-rasterised polygons.
+ * RSP geometry (225 verts: centre + four 8-vertex rings to the 70000 rim,
+ * a per-quad-rebased textured band out to ~290000 = the original's textured
+ * extent at ~97% fog, and a shade-only feather skirt down to the horizon),
+ * replacing the original's CPU-rasterised polygons.
  *
  * Transform, derived from the original's own chain (sub_GAME_7F097388
  * projects sky corners through camGetWorldToScreenMtxf x projF; its
@@ -188,6 +190,25 @@ static u8 g_SkyDbgPrint = 0;
 // "x32 texel" correction attempted earlier was ~15x too dense (radial moire).
 #define SKY_TEXEL_PER_WORLD 0.2f
 
+// Outer edge of the TEXTURED sky: the original's own ray cap is 300000
+// (skyIsScreenCornerInSky), where the fog law reads ~97% — effectively the
+// fog's opacity boundary; beyond its cap the original's UVs freeze (capped
+// positions), i.e. it carries no true texture either. 290000 instead of
+// 300000 keeps the worst-case per-quad UV span of the outer band inside the
+// s16 budget with 16 sectors and 2 radial sub-bands:
+// span <= (32767 - 4096 rebase remainder) / 0.2 = 143355 world units, and
+// the worst quad (r_mid 180000 -> 290000, 22.5 deg) spans ~141600.
+#define SKY_BAND_OUTER 290000.0f
+
+// 22.5-degree direction table for the outer band / skirt rings. Even entries
+// are exactly the disc's octagon directions.
+static const f32 DIR16[16][2] = {
+    { 1.0f, 0.0f },       { 0.92388f, 0.38268f },   { 0.7071f, 0.7071f },   { 0.38268f, 0.92388f },
+    { 0.0f, 1.0f },       { -0.38268f, 0.92388f },  { -0.7071f, 0.7071f },  { -0.92388f, 0.38268f },
+    { -1.0f, 0.0f },      { -0.92388f, -0.38268f }, { -0.7071f, -0.7071f }, { -0.38268f, -0.92388f },
+    { 0.0f, -1.0f },      { 0.38268f, -0.92388f },  { 0.7071f, -0.7071f },  { 0.92388f, -0.38268f },
+};
+
 static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     s32 i;
     s32 k;
@@ -207,6 +228,15 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     f32 h;
     f32 uoff;
     f32 depth_s = 1.0f;
+    // Outer textured band (rim -> fog opacity boundary): ring 0 = attach ring
+    // on the rim octagon, ring 1 = r_mid, ring 2 = r_outer. World coords,
+    // then converted camera-relative in place once the UVs are taken.
+    f32 bx[48], bz[48];
+    f32 bs[48], bt[48];
+    f32 r_mid;
+    f32 r_outer;
+    s32 m;
+    s32 j;
     coord3d* eye = bondviewGetCurrentPlayersPosition();
     // Embed the vertex and matrix data directly inside the master display
     // list: reserve a gap in the command stream and branch over it. The DL
@@ -217,9 +247,10 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     Vtx* verts = (Vtx*) gdl;
     Mtx* mtx_render;
     Mtxf fitmtx;
-    SkyRelated18 cols[5];
+    SkyRelated18 cols[8];
 
-    gdl = (Gfx*) ((u8*) gdl + 33 * sizeof(Vtx));
+    // 33 disc + 128 outer-band (32 quads x 4, per-quad UV rebase) + 64 skirt.
+    gdl = (Gfx*) ((u8*) gdl + 225 * sizeof(Vtx));
     mtx_render = (Mtx*) gdl;
     gdl = (Gfx*) ((u8*) gdl + sizeof(Mtx));
     gSPBranchList(bp, SKY_K0_TO_PHYS(gdl));
@@ -247,7 +278,10 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         radius[0] = radius[1] * 0.6f;
     }
     radius[3] = SKY_PLANE_RADIUS;
-    // Vertex layout: 0 = centre, 1-8 = r1, 9-16 = r2, 17-24 = r3, 25-32 = rim.
+    // Vertex layout: 0 = centre, 1-8 = r1, 9-16 = r2, 17-24 = r3,
+    // 25-32 = rim; 33-160 = outer textured band (32 quads x 4, per-quad UV
+    // rebase); 161-224 = feather skirt (16 quads x 4). Band and skirt are
+    // emitted after the disc loop below.
     wx[0] = eye->x;
     wz[0] = eye->z;
     for (k = 0; k < 4; k++) {
@@ -265,21 +299,63 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         px[7] = eye->x + rd;  pz[7] = eye->z - rd;
     }
 
+    // Depth scale, per frame, in MODEL units. This port projects through the
+    // ORIGINAL sky transform (camGetWorldToScreenMtxf x projF — the exact
+    // matrix chain sub_GAME_7F097388 uses, with its float1/30 scale dance
+    // cancelled out), which operates on raw model-unit world positions. The
+    // original CPU rasteriser discarded Z so it never met the far plane; on
+    // the RSP we shrink the whole geometry radially around the eye instead —
+    // angles (the on-screen image) are unchanged. Fit the OUTER BAND edge at
+    // 85% of zfar; if the overhead centre would then dip under 1.5x znear,
+    // favour the near plane. The band's outer radius then adapts to whatever
+    // still fits the depth range, down to just past the rim (fog-heavy
+    // levels hide the horizon anyway; a far-clipped band edge there lands on
+    // the fog-coloured base fill, which is what that region shows regardless).
+    {
+        f32 zrange[2];
+        f32 near_floor;
+        viGetZRange(zrange);
+        depth_s = (0.85f * zrange[1]) / SKY_BAND_OUTER;
+        if (depth_s > 1.0f) {
+            depth_s = 1.0f;
+        }
+        near_floor = 1.5f * zrange[0];
+        if (h * depth_s < near_floor) {
+            depth_s = near_floor / h;
+        }
+        r_outer = (0.85f * zrange[1]) / depth_s;
+        if (r_outer > SKY_BAND_OUTER) {
+            r_outer = SKY_BAND_OUTER;
+        }
+        if (r_outer < SKY_PLANE_RADIUS * 1.05f) {
+            r_outer = SKY_PLANE_RADIUS * 1.05f;
+        }
+        r_mid = (SKY_PLANE_RADIUS + r_outer) * 0.5f;
+    }
+
     // Colour per ring from the ORIGINAL fog law frac = 1 - min(2h/r, 1)
     // (equivalent to 1 - min(2 tan(elev), 1); 0 = full sky colour, 1 = pure
     // fog), evaluated at the CAPPED radii so the samples stay on the curve.
-    // Rim forced to 1.0 so it blends seamlessly into the fog-coloured base
-    // fill beyond the disc.
+    // Every ring including the band's outer edge carries its TRUE law value —
+    // the original fades continuously to ~97% at its 300000 ray cap and to
+    // frac ~1 exactly at the horizon row (skyIsScreenCornerInSky with y->0).
+    // cols[4] = rim/attach ring (~87% on Dam), cols[5] = r_mid,
+    // cols[6] = r_outer (~97%), cols[7] = pure fog for the skirt's horizon
+    // edge.
     {
-        f32 fr[5];
+        f32 fr[8];
         fr[0] = 0.0f;
-        for (k = 0; k < 3; k++) {
+        for (k = 0; k < 4; k++) {
             f32 f = 1.0f - (2.0f * h) / radius[k];
             if (f < 0.0f) f = 0.0f;
             fr[k + 1] = f;
         }
-        fr[4] = 1.0f;
-        for (k = 0; k < 5; k++) {
+        fr[5] = 1.0f - (2.0f * h) / r_mid;
+        if (fr[5] < 0.0f) fr[5] = 0.0f;
+        fr[6] = 1.0f - (2.0f * h) / r_outer;
+        if (fr[6] < 0.0f) fr[6] = 0.0f;
+        fr[7] = 1.0f;
+        for (k = 0; k < 8; k++) {
             if (isWater) {
                 sub_GAME_7F093FA4(&cols[k], fr[k]);
             } else {
@@ -308,28 +384,6 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     smin = (f32) (((s32) (smin / 4096.0f)) * 4096);
     tmin = (f32) (((s32) (tmin / 4096.0f)) * 4096);
 
-    // Depth scale, per frame, in MODEL units. This port projects through the
-    // ORIGINAL sky transform (camGetWorldToScreenMtxf x projF — the exact
-    // matrix chain sub_GAME_7F097388 uses, with its float1/30 scale dance
-    // cancelled out), which operates on raw model-unit world positions. The
-    // original CPU rasteriser discarded Z so it never met the far plane; on
-    // the RSP we shrink the disc radially around the eye instead — angles
-    // (the on-screen image) are unchanged, depth fits: rim at 85% of zfar,
-    // overhead centre floored at 1.5x znear (near wins if they conflict).
-    {
-        f32 zrange[2];
-        f32 near_floor;
-        viGetZRange(zrange);
-        depth_s = (0.85f * zrange[1]) / SKY_PLANE_RADIUS;
-        if (depth_s > 1.0f) {
-            depth_s = 1.0f;
-        }
-        near_floor = 1.5f * zrange[0];
-        if (h * depth_s < near_floor) {
-            depth_s = near_floor / h;
-        }
-    }
-
     // CAMERA-RELATIVE model-unit vertices, disc shrunk radially around the
     // eye. Camera-relative because the RSP's s15.16 matrix cannot hold the
     // true-world view translation (-cam.R reaches ~45000 on Dam — this is
@@ -349,6 +403,36 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         c = cz < 0.0f ? -cz : cz;
         if (c > maxc) maxc = c;
     }
+
+    // Outer band rings, same treatment: world positions -> world-anchored
+    // UVs -> camera-relative in place, folded into the fit bound. The attach
+    // ring (ring 0) lies exactly ON the rim octagon: even entries are the
+    // rim vertices themselves, odd entries the octagon edge midpoints
+    // (radius x cos 22.5), so the band meets batch 4 with no cracks; their
+    // colour is the rim colour (cols[4]) and their UVs are the linear
+    // midpoint of the rim UVs (tc is linear in world position), so shading
+    // and texture are seam-free across the joint too.
+    for (m = 0; m < 16; m++) {
+        f32 attach_r = (m & 1) ? SKY_PLANE_RADIUS * 0.92388f : SKY_PLANE_RADIUS;
+        bx[m] = eye->x + attach_r * DIR16[m][0];
+        bz[m] = eye->z + attach_r * DIR16[m][1];
+        bx[16 + m] = eye->x + r_mid * DIR16[m][0];
+        bz[16 + m] = eye->z + r_mid * DIR16[m][1];
+        bx[32 + m] = eye->x + r_outer * DIR16[m][0];
+        bz[32 + m] = eye->z + r_outer * DIR16[m][1];
+    }
+    for (m = 0; m < 48; m++) {
+        f32 c;
+        bs[m] = bx[m] * SKY_TEXEL_PER_WORLD + uoff;
+        bt[m] = bz[m] * SKY_TEXEL_PER_WORLD + g_SkyCloudOffset;
+        bx[m] = (bx[m] - eye->x) * depth_s;
+        bz[m] = (bz[m] - eye->z) * depth_s;
+        c = bx[m] < 0.0f ? -bx[m] : bx[m];
+        if (c > maxc) maxc = c;
+        c = bz[m] < 0.0f ? -bz[m] : bz[m];
+        if (c > maxc) maxc = c;
+    }
+
     if (maxc > 32000.0f) {
         fit = 32000.0f / maxc;
     }
@@ -371,6 +455,7 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         Mtxf viewrot;
         Mtxf composed;
         Mtxf* wts = camGetWorldToScreenMtxf();
+        f32 conc = fogGetCurrentEnvironmentp()->WaterConcavity;
         for (i = 0; i < 4; i++) {
             for (k = 0; k < 4; k++) {
                 viewrot.m[i][k] = wts->m[i][k];
@@ -382,6 +467,34 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         // Game convention (bondview.c:11552): multiply(A, B, C) => v.C
         // applies B first, then A — so this is "unscale by fit, then rotate".
         matrix_4x4_multiply(&viewrot, &fitmtx, &composed);
+
+        // WaterConcavity: the original biases every sky/water RAY down by
+        // `conc` screen pixels (skyGetWorldPosFromScreenPos adds it to the
+        // screen y) and shifts every DRAWN vertex up by the same amount
+        // (sub_GAME_7F097388: unk2c = y - conc*4) — net, the whole plane
+        // system renders lifted `conc` pixels above the geometric horizon,
+        // which is what widens the fog band at the horizon on levels like
+        // Frigate (Dam has conc = 0, which is why the fan matched there
+        // without this). For real 3D geometry the equivalent is a small
+        // camera pitch: tan(angle) = conc / (P11 * half screen height in
+        // px). Applied in view space AFTER the view rotation; row-vector
+        // rotation (y' = y*c - z*s) lifts content ahead (view z < 0) for
+        // positive sin, matching the original's upward shift.
+        if (conc != 0.0f) {
+            Mtxf pitch;
+            Mtxf lifted;
+            f32 t = conc / (currentPlayerGetProjectionMatrixF()->m[1][1] * (getPlayer_c_screenheight() * 0.5f));
+            f32 cs = 1.0f / sqrtf(1.0f + t * t);
+            f32 sn = t * cs;
+            guScaleF(pitch.m, 1.0f, 1.0f, 1.0f);
+            pitch.m[1][1] = cs;
+            pitch.m[1][2] = sn;
+            pitch.m[2][1] = -sn;
+            pitch.m[2][2] = cs;
+            matrix_4x4_multiply(&pitch, &composed, &lifted);
+            composed = lifted;
+        }
+
         matrix_4x4_f32_to_s32(&composed, (Mtxf*) mtx_render);
     }
 
@@ -411,6 +524,71 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         verts[i].v.cn[2] = col->b;
         verts[i].v.cn[3] = col->a;
 #endif
+    }
+
+    // Outer band verts 33-160: 2 radial sub-bands x 16 sectors, one QUAD per
+    // vertex-load (4 verts) so each quad gets its OWN 4096-period UV rebase —
+    // this is what lets true-density texture continue past the disc's shared
+    // rebase budget, out to r_outer (~97% fog, the original's own textured
+    // extent). Adjacent quads differ only by whole visual periods (4096), so
+    // the texture is continuous across every quad boundary.
+    for (j = 0; j < 2; j++) {
+        for (m = 0; m < 16; m++) {
+            s32 m2 = (m + 1) & 15;
+            s32 q[4];
+            f32 qsmin, qtmin;
+            Vtx* v = verts + 33 + (j * 16 + m) * 4;
+            q[0] = j * 16 + m;
+            q[1] = j * 16 + m2;
+            q[2] = (j + 1) * 16 + m;
+            q[3] = (j + 1) * 16 + m2;
+            qsmin = bs[q[0]];
+            qtmin = bt[q[0]];
+            for (k = 1; k < 4; k++) {
+                if (bs[q[k]] < qsmin) qsmin = bs[q[k]];
+                if (bt[q[k]] < qtmin) qtmin = bt[q[k]];
+            }
+            qsmin = (f32) (((s32) (qsmin / 4096.0f)) * 4096);
+            qtmin = (f32) (((s32) (qtmin / 4096.0f)) * 4096);
+            for (k = 0; k < 4; k++) {
+                SkyRelated18* bcol = (k < 2) ? &cols[4 + j] : &cols[5 + j];
+                v[k].v.ob[0] = bx[q[k]] * fit;
+                v[k].v.ob[1] = rsp_y * fit;
+                v[k].v.ob[2] = bz[q[k]] * fit;
+                v[k].v.tc[0] = skyClamp(bs[q[k]] - qsmin, -32768.f, 32767.f);
+                v[k].v.tc[1] = skyClamp(bt[q[k]] - qtmin, -32768.f, 32767.f);
+                v[k].v.cn[0] = bcol->r;
+                v[k].v.cn[1] = bcol->g;
+                v[k].v.cn[2] = bcol->b;
+                v[k].v.cn[3] = bcol->a;
+            }
+        }
+    }
+
+    // Feather skirt verts 161-224 (16 sectors x 4): from the band's outer
+    // ring down to EYE level (ob y = 0), which on screen is exactly the
+    // plane's horizon line — the anchor the original used (its horizon-edge
+    // vertices got frac ~1 from skyIsScreenCornerInSky as ray y -> 0). Top
+    // colour = the band edge's true law colour (cols[6], ~97%), bottom =
+    // pure fog (cols[7]). Shade-only: at 97% fog the texel term is
+    // imperceptible (the original carries no true texture past its cap
+    // either — its UVs freeze at the capped positions).
+    for (m = 0; m < 16; m++) {
+        s32 m2 = (m + 1) & 15;
+        Vtx* v = verts + 161 + m * 4;
+        for (k = 0; k < 4; k++) {
+            s32 src = 32 + ((k & 1) ? m2 : m);
+            SkyRelated18* scol = (k < 2) ? &cols[6] : &cols[7];
+            v[k].v.ob[0] = bx[src] * fit;
+            v[k].v.ob[1] = (k < 2) ? (s16) (rsp_y * fit) : 0;
+            v[k].v.ob[2] = bz[src] * fit;
+            v[k].v.tc[0] = 0;
+            v[k].v.tc[1] = 0;
+            v[k].v.cn[0] = scol->r;
+            v[k].v.cn[1] = scol->g;
+            v[k].v.cn[2] = scol->b;
+            v[k].v.cn[3] = scol->a;
+        }
     }
 
     // Clear culling AND G_FOG, exactly like explosion.c:883 — the original
@@ -456,6 +634,25 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
         gSP4Triangles(gdl++, a, b, b2, b2, a2, a, c, d, d2, d2, c2, c);
     }
 
+    // Batch 5: textured outer band — 32 quads, one vertex load each (their
+    // UVs are individually rebased; see the vertex build above).
+    for (k = 0; k < 32; k++) {
+        gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 33 + k * 4), 4, 0);
+        gSP2Triangles(gdl++, 0, 1, 3, 0, 3, 2, 0, 0);
+    }
+
+    // Batch 6: feather skirt, band edge -> horizon, SHADE-ONLY: dropping
+    // TEXEL0 is what frees it from the UV budget entirely. The combine leak
+    // is within the existing contract — each pass re-establishes its own
+    // texture/combine before drawing (water sub_GAME_7F09343C, sky
+    // gDPSetCombineLERP), and downstream world rendering sets its own state.
+    gDPPipeSync(gdl++);
+    gDPSetCombineMode(gdl++, G_CC_SHADE, G_CC_SHADE);
+    for (k = 0; k < 16; k++) {
+        gSPVertex(gdl++, SKY_K0_TO_PHYS(verts + 161 + k * 4), 4, 0);
+        gSP2Triangles(gdl++, 0, 1, 3, 0, 3, 2, 0, 0);
+    }
+
 #if SKYDBG
     {
         if (g_SkyDbgPrint) {
@@ -485,6 +682,31 @@ static Gfx* skyDrawPlaneFan(Gfx* gdl, f32 plane_y, bool isWater) {
     return gdl;
 }
 #endif
+
+// @recomp: paint the letterbox rows (the rows outside the 220-line view) with
+// the sky colour instead of the black frame clear. Thin strips only, on
+// purpose: a single full-frame fill covers the whole colour target and RT64
+// classifies that as a whole-render-target clear (rt64_framebuffer_renderer
+// FillRect path) — runtime-tested 2026-07-11, it wiped later draws (models,
+// portal rooms, menu backgrounds, fades). Partial rects take the same
+// scissored-clear path the view-rect base coat has always used. LEFT/RIGHT
+// rect-align origins stretch each strip to the extended widescreen edges.
+// Caller must already have FILL cycle + the sky fill colour set. Single
+// player only: in split-screen these rows belong to the other players.
+static Gfx* skyFillLetterboxBars(Gfx* gdl, s32 viewtop, s32 viewbottom) {
+    if (getPlayerCount() != 1) {
+        return gdl;
+    }
+    gEXSetRectAlign(gdl++, G_EX_ORIGIN_LEFT, G_EX_ORIGIN_RIGHT, 0, 0, 0, 0);
+    if (viewtop > 0) {
+        gDPFillRectangle(gdl++, 0, 0, 0, viewtop - 1);
+    }
+    if (viewbottom < 240) {
+        gDPFillRectangle(gdl++, 0, viewbottom, 0, 239);
+    }
+    gEXSetRectAlign(gdl++, G_EX_ORIGIN_NONE, G_EX_ORIGIN_NONE, 0, 0, 0, 0);
+    return gdl;
+}
 
 #if 1
 RECOMP_PATCH Gfx* skyRender(Gfx* gdl) __attribute__((optnone)) {
@@ -548,6 +770,25 @@ RECOMP_PATCH Gfx* skyRender(Gfx* gdl) __attribute__((optnone)) {
     sp430 = FALSE;
     env = fogGetCurrentEnvironmentp();
 
+    // @recomp TEMP telemetry (2026-07-11, remove after the Frigate fog
+    // session): one line/sec of the live environment + depth state, to nail
+    // the cloud-whiteness / horizon-fade comparison against gopher64.
+    {
+        static u32 envdbg_frame = 0;
+        if ((envdbg_frame++ & 63) == 0) {
+            f32 zr[2];
+            viGetZRange(zr);
+            recomp_printf("SKYENV rgb=(%d,%d,%d) clouds=%d cloudRGB=(%d,%d,%d) crept=%d water=%d waterRGB=(%d,%d,%d) wrept=%d conc=%d farI=%d difI=%d znear=%d zfar=%d\n",
+                          env->Red, env->Green, env->Blue, env->Clouds,
+                          (s32) env->CloudRed, (s32) env->CloudGreen, (s32) env->CloudBlue,
+                          (s32) env->CloudRepeat, env->IsWater,
+                          (s32) env->WaterRed, (s32) env->WaterGreen, (s32) env->WaterBlue,
+                          (s32) env->WaterRepeat, (s32) env->WaterConcavity,
+                          env->FarIntensity, env->DifferenceFromFarIntensity,
+                          (s32) zr[0], (s32) zr[1]);
+        }
+    }
+
 #if SKYDBG
     g_SkyDbgPrint = (g_SkyDbgFrame++ & 63) == 0;
 #endif
@@ -560,6 +801,9 @@ RECOMP_PATCH Gfx* skyRender(Gfx* gdl) __attribute__((optnone)) {
 
             gDPFillRectangle(gdl++, viGetViewLeft(), viGetViewTop(), viGetViewLeft() + viGetViewWidth() - 1,
                              viGetViewTop() + viGetViewHeight() - 1);
+
+            // @recomp: sky-colour the letterbox rows too (see helper).
+            gdl = skyFillLetterboxBars(gdl, viGetViewTop(), viGetViewTop() + viGetViewHeight());
 
             gDPPipeSync(gdl++);
             return gdl;
@@ -590,6 +834,10 @@ RECOMP_PATCH Gfx* skyRender(Gfx* gdl) __attribute__((optnone)) {
     gDPFillRectangle(gdl++, g_CurrentPlayer->viewleft, g_CurrentPlayer->viewtop,
                      (g_CurrentPlayer->viewleft + g_CurrentPlayer->viewx) - 1,
                      (g_CurrentPlayer->viewtop + g_CurrentPlayer->viewy) - 1);
+
+    // @recomp: sky-colour the letterbox rows too (see helper).
+    gdl = skyFillLetterboxBars(gdl, g_CurrentPlayer->viewtop, g_CurrentPlayer->viewtop + g_CurrentPlayer->viewy);
+
     gDPPipeSync(gdl++);
 #endif
 

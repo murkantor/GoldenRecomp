@@ -15,6 +15,7 @@ if (WIN32)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR")
 endif()
 
+
 # Avoid warning about DOWNLOAD_EXTRACT_TIMESTAMP in CMake 3.24:
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     cmake_policy(SET CMP0135 NEW)
@@ -40,6 +41,13 @@ SET(RMLUI_TESTS_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RmlUi)
 
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
+
+# The bundled fmt 10.x fails its FMT_STRING consteval parse under clang >= 21
+# (string-literal pointer arithmetic no longer constant-foldable); building it
+# as C++17 disables fmt's consteval path without touching the submodule.
+if (TARGET fmt)
+    set_target_properties(fmt PROPERTIES CXX_STANDARD 17)
+endif()
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/rt64/src)
 
@@ -102,11 +110,20 @@ if(NOT DEFINED PATCHES_OBJCOPY)
     set(PATCHES_OBJCOPY llvm-objcopy)
 endif()
 
-add_custom_target(PatchesBin
-    COMMAND ${CMAKE_COMMAND} -E env CC=${PATCHES_C_COMPILER} LD=${PATCHES_LD} OBJCOPY=${PATCHES_OBJCOPY} make
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/patches
-    BYPRODUCTS ${CMAKE_SOURCE_DIR}/patches/patches.elf
-)
+if(WIN32)
+    # No native make/mips-clang on Windows; build the patches inside WSL.
+    add_custom_target(PatchesBin
+        COMMAND wsl make CC=${PATCHES_C_COMPILER} LD=${PATCHES_LD} OBJCOPY=${PATCHES_OBJCOPY}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/patches
+        BYPRODUCTS ${CMAKE_SOURCE_DIR}/patches/patches.elf
+    )
+else()
+    add_custom_target(PatchesBin
+        COMMAND ${CMAKE_COMMAND} -E env CC=${PATCHES_C_COMPILER} LD=${PATCHES_LD} OBJCOPY=${PATCHES_OBJCOPY} make
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/patches
+        BYPRODUCTS ${CMAKE_SOURCE_DIR}/patches/patches.elf
+    )
+endif()
 
 # Generate patches_bin.c from patches.bin
 add_custom_command(OUTPUT ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.c
@@ -139,6 +156,17 @@ add_custom_target(DownloadGameControllerDB
 # Main executable
 add_executable(GoldenRecomp)
 add_dependencies(GoldenRecomp DownloadGameControllerDB)
+
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    # The vendored SDL 2.26 headers redefine clang's _m_prefetch builtin (a
+    # workaround for clang 11 that breaks clang >= 15). Pre-including intrin.h
+    # defines the real intrinsic first, so SDL's fallback is skipped.
+    target_compile_options(rt64 PRIVATE /FIintrin.h)
+    target_compile_options(GoldenRecomp PRIVATE /FIintrin.h)
+    # rt64 builds its vendored imgui with -Werror; clang >= 21 introduces this
+    # warning, which imgui 1.x trips.
+    target_compile_options(rt64 PRIVATE -Wno-uninitialized-const-pointer)
+endif()
 
 # Generate mm_shader_cache.c from the MM shader cache if it exists
 if (EXISTS ${CMAKE_SOURCE_DIR}/shadercache/mm_shader_cache.bin)
@@ -309,6 +337,17 @@ target_link_libraries(GoldenRecomp PRIVATE
     nfd
     lunasvg
 )
+
+# Every RECOMP_PATCH function exists twice in this link: the recompiled
+# original in RecompiledFuncs and the patch in PatchesLib. A full link
+# resolves each duplicate to PatchesLib (listed first); INCREMENTAL linking
+# re-binds them unpredictably on partial relinks — observed 2026-07-11 as
+# patches silently reverting to the original code (no clouds, the Start-Game
+# crash returning) after builds that only touched the patches lib. Force
+# full links.
+if(WIN32)
+    target_link_options(GoldenRecomp PRIVATE "/INCREMENTAL:NO")
+endif()
 
 # TODO fix the rt64 CMake script so that this doesn't need to be duplicated here
 # For DXC
