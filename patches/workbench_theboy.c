@@ -3,6 +3,7 @@
 int demoMode = 0;
 
 void waitForNextFrame2();  // @theboy181 - Improtant for proper fps
+void gunfixesApplyDataFixes(void);  // gunfixes.c
 #if 1
 RECOMP_PATCH Gfx *sub_GAME_7F009254(Gfx *gdl) {
     D_8002A7D0 = (1 - D_8002A7D0);
@@ -507,6 +508,9 @@ RECOMP_PATCH void bossMainloop(void) {
 
     // end declarations
 
+
+    // One-time pokes to resident game data (Baron Samedi freeze table fix).
+    gunfixesApplyDataFixes();
 
     done = 0;
     reset_mem_bank_5();
