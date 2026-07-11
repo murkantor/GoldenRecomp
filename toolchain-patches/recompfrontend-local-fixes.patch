@@ -49,3 +49,25 @@ index 03ed871..a593bb3 100644
      case InputType::None:
          return false;
      }
+diff --git a/recompinput/src/input_types.cpp b/recompinput/src/input_types.cpp
+index c6786e6..681009e 100644
+--- a/recompinput/src/input_types.cpp
++++ b/recompinput/src/input_types.cpp
+@@ -260,6 +260,17 @@ std::string recompinput::InputField::to_string() const {
+         return controller_axis_to_string(input_id);
+     case InputType::Keyboard:
+         return keyboard_input_to_string((SDL_Scancode)input_id);
++    case InputType::Mouse:
++        // @goldenrecomp local fix (paired with the mouse binding support):
++        // display names for bound mouse buttons.
++        switch (input_id) {
++        case SDL_BUTTON_LEFT: return "Mouse Left";
++        case SDL_BUTTON_MIDDLE: return "Mouse Middle";
++        case SDL_BUTTON_RIGHT: return "Mouse Right";
++        case SDL_BUTTON_X1: return "Mouse 4";
++        case SDL_BUTTON_X2: return "Mouse 5";
++        default: return "Mouse " + std::to_string(input_id);
++        }
+     default:
+         return recompinput::unknown_device_input;
+     }

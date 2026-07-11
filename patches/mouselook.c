@@ -45,7 +45,10 @@ RECOMP_PATCH void bondviewApplyVertaTheta(void) {
             recomp_printf("MOUSEDIAG patch: cam=%d player=%d\n", (s32) g_CameraMode, get_cur_playernum());
         }
     }
-    if ((g_CameraMode == CAMERAMODE_NONE) && (get_cur_playernum() == 0)) {
+    // CAMERAMODE_FP is normal first-person play (diagnosed empirically:
+    // cam=4 during gameplay, 1/3 during intro cams). FP_NOINPUT stays
+    // excluded — the game is explicit about input being off there.
+    if (((g_CameraMode == CAMERAMODE_FP) || (g_CameraMode == CAMERAMODE_MP)) && (get_cur_playernum() == 0)) {
         f32 mouse_dx;
         f32 mouse_dy;
         recomp_get_mouse_deltas(&mouse_dx, &mouse_dy);
